@@ -1,0 +1,92 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "RAG-Anything",
+  "projectDescription": "An all-in-one multimodal RAG framework that processes PDFs, Office documents, images, tables, equations, and custom content types through a unified pipeline built on LightRAG.",
+  "theme": "luma",
+  "primaryColor": "#912d37",
+  "lightColor": "#776f67",
+  "darkColor": "#d3cfcc",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/multimodal-pipeline",
+              "concepts/knowledge-graph"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/document-processing",
+              "guides/querying",
+              "guides/batch-processing",
+              "guides/context-aware-processing",
+              "guides/custom-modal-processors"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/parsers",
+              "integrations/vllm",
+              "integrations/offline-setup"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/configuration",
+              "reference/api",
+              "reference/content-formats",
+              "reference/supported-formats"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "End-to-end multimodal document processing pipeline (PDF, Office, images, text)",
+    "Specialized modal processors for images, tables, mathematical equations, and custom types",
+    "Multimodal knowledge graph with cross-modal entity extraction and relationship discovery",
+    "Multiple parser backends: MinerU, Docling, PaddleOCR",
+    "Three query modes: pure text, VLM-enhanced, and multimodal queries",
+    "Direct content list insertion for pre-parsed or programmatically generated content",
+    "Batch processing with parallel workers and progress tracking",
+    "Context-aware multimodal analysis using surrounding document content",
+    "Built on LightRAG for hybrid vector-graph retrieval"
+  ],
+  "publicApiSurface": [
+    "RAGAnything — main pipeline class",
+    "RAGAnythingConfig — configuration dataclass",
+    "Parser — base parser class",
+    "RAGAnything.process_document_complete(file_path, output_dir, parse_method, parser, ...)",
+    "RAGAnything.process_folder_complete(folder_path, output_dir, file_extensions, recursive, max_workers)",
+    "RAGAnything.insert_content_list(content_list, file_path, split_by_character, doc_id, display_stats)",
+    "RAGAnything.aquery(query, mode, vlm_enhanced)",
+    "RAGAnything.aquery_with_multimodal(query, multimodal_content, mode)",
+    "RAGAnything.query(query, mode) — synchronous version",
+    "ImageModalProcessor — process image content",
+    "TableModalProcessor — process tabular content",
+    "EquationModalProcessor — process LaTeX/math content",
+    "GenericModalProcessor — extensible base for custom modalities",
+    "ContextExtractor — surrounding content extraction for modal processors",
+    "BatchParser — standalone batch document parsing",
+    "register_parser / unregister_parser / list_parsers / get_supported_parsers",
+    "ProcessingCallback / MetricsCallback / CallbackManager / ProcessingEvent",
+    "set_prompt_language / get_prompt_language / register_prompt_language"
+  ]
+}

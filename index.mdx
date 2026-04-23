@@ -1,97 +1,102 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "RAG-Anything: All-in-One Multimodal RAG Framework"
+description: "Process PDFs, Office documents, images, tables, and equations through a unified retrieval-augmented generation pipeline built on LightRAG."
 ---
 
-## Setting up
+RAG-Anything is an open-source Python library that brings multimodal intelligence to retrieval-augmented generation. Unlike text-only RAG systems, it handles the full spectrum of document content—diagrams, tables, mathematical equations, and rich text—through a single coherent pipeline. Built on [LightRAG](https://github.com/HKUDS/LightRAG), it combines hybrid vector-graph retrieval with specialized modal processors to deliver contextually accurate answers from complex, mixed-content documents.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get a working RAG pipeline running in minutes with a real document
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install via PyPI or from source, with optional format-specific extras
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the five-stage multimodal pipeline under the hood
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/reference/api">
+    Full reference for RAGAnything, processors, and configuration
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What RAG-Anything does
 
-Everything you need to create world-class documentation.
+Modern technical documents — research papers, financial reports, engineering specs — mix text, charts, tables, and equations. Traditional RAG systems drop most of that richness. RAG-Anything preserves it by routing each content type through a dedicated processor, then building a multimodal knowledge graph that captures relationships across modalities.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={3}>
+  <Card title="Universal document support" icon="file-lines">
+    PDFs, Word, PowerPoint, Excel, images, Markdown, and plain text
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Specialized modal processors" icon="layer-group">
+    Dedicated analyzers for images, tables, LaTeX equations, and custom types
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Multimodal knowledge graph" icon="share-nodes">
+    Cross-modal entity extraction and relationship discovery via LightRAG
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Three query modes" icon="magnifying-glass">
+    Pure text, VLM-enhanced, and multimodal queries in one interface
   </Card>
-</Columns>
+  <Card title="Multiple parser backends" icon="gears">
+    MinerU, Docling, and PaddleOCR — choose the right tool for your content
+  </Card>
+  <Card title="Batch processing" icon="list-check">
+    Parallel document ingestion with progress tracking and error recovery
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install RAG-Anything">
+    ```bash
+    pip install raganything
+    ```
+    For extended format support (images, text files, PaddleOCR):
+    ```bash
+    pip install 'raganything[all]'
+    ```
+  </Step>
+  <Step title="Configure your LLM and embedding functions">
+    RAG-Anything wraps any OpenAI-compatible LLM and embedding endpoint. Set your API key and define the model functions — see the [Quickstart](/quickstart) for a complete example.
+  </Step>
+  <Step title="Process a document">
+    ```python
+    await rag.process_document_complete(
+        file_path="research_paper.pdf",
+        output_dir="./output"
+    )
+    ```
+  </Step>
+  <Step title="Query your knowledge base">
+    ```python
+    result = await rag.aquery(
+        "What are the key findings in the figures and tables?",
+        mode="hybrid"
+    )
+    ```
+  </Step>
+</Steps>
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Document processing guide" icon="file-import" href="/guides/document-processing">
+    Learn how to ingest single files, folders, and pre-parsed content lists
+  </Card>
+  <Card title="Querying guide" icon="circle-question" href="/guides/querying">
+    Master text, VLM-enhanced, and multimodal query modes
+  </Card>
+  <Card title="Batch processing" icon="clone" href="/guides/batch-processing">
+    Process large document collections in parallel
+  </Card>
+  <Card title="Parser integrations" icon="plug" href="/integrations/parsers">
+    Compare MinerU, Docling, and PaddleOCR for your use case
+  </Card>
+  <Card title="Context-aware processing" icon="brain" href="/guides/context-aware-processing">
+    Configure surrounding-content context for richer modal analysis
+  </Card>
+  <Card title="Configuration reference" icon="sliders" href="/reference/configuration">
+    All RAGAnythingConfig parameters and environment variables
+  </Card>
+</CardGroup>

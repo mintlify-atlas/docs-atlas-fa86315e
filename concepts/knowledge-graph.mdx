@@ -1,0 +1,189 @@
+---
+title: "Multimodal knowledge graph: construction and retrieval"
+description: "Understand how RAG-Anything constructs a knowledge graph from multimodal content and why graph-based retrieval outperforms pure vector search."
+---
+
+Pure vector search finds chunks that are _semantically close_ to a query, but it cannot reason about _relationships_. A table that describes an experiment referenced in a nearby figure, or an equation that defines a term used three pages later, are invisible to a cosine-similarity ranker operating on isolated chunk embeddings. RAG-Anything solves this by building a **multimodal knowledge graph** on top of LightRAG's graph store: every image, table, and equation becomes a named entity, and edges encode the relationships between those entities and the rest of the document's concepts.
+
+## From content to graph nodes
+
+When a modal processor finishes analysing a multimodal element it returns an `entity_info` dict:
+
+```python
+entity_info = {
+    "entity_name": "Performance Results Table (table)",
+    "entity_type": "table",
+    "summary": "Comparative performance of RAGAnything vs. baseline across accuracy and F1-score metrics on the test dataset."
+}
+```
+
+This entity is written to three stores simultaneously inside `_store_multimodal_main_entities`:
+
+1. **`knowledge_graph_inst`** (LightRAG's graph store) — a node keyed by `entity_name` with `entity_type`, `description`, `source_id`, and `file_path`.
+2. **`entities_vdb`** — the entity vector database, indexed on `entity_name + "\n" + summary` so similarity queries can find entities by their meaning.
+3. **`full_entities`** — a per-document entity registry used by LightRAG's document-level management.
+
+```python
+node_data = {
+    "entity_id": entity_info["entity_name"],
+    "entity_type": entity_info["entity_type"],
+    "description": entity_info["summary"],
+    "source_id": chunk_id,
+    "file_path": file_path,
+    "created_at": int(time.time()),
+}
+await self.knowledge_graph_inst.upsert_node(entity_info["entity_name"], node_data)
+```
+
+## Entity extraction from multimodal chunks
+
+Storing the entity node is only the first step. The processor also runs LightRAG's standard `extract_entities` function on the text chunk it produced (the formatted chunk content containing the description, captions, and metadata). This second pass extracts _additional_ named entities and relationships that the LLM finds inside the description:
+
+```python
+chunk_results = await extract_entities(
+    chunks=chunks,
+    global_config=self.lightrag.__dict__,
+    pipeline_status=pipeline_status,
+    pipeline_status_lock=pipeline_status_lock,
+    llm_response_cache=self.lightrag.llm_response_cache,
+    text_chunks_storage=self.lightrag.text_chunks,
+)
+```
+
+The result is a list of `(maybe_nodes, maybe_edges)` tuples — nodes for each entity found in the description, and edges for every relationship the LLM inferred between them.
+
+## Cross-modal relationship mapping via `belongs_to`
+
+After entity extraction, RAG-Anything adds a `belongs_to` edge from every entity discovered in the chunk back to the modal entity (the table, image, or equation itself). This single pattern captures three important facts:
+
+- Which textual concepts are _explained by_ a given multimodal element.
+- Which multimodal elements are _part of_ a larger document section.
+- How distant entities relate across modality boundaries.
+
+```python
+relation_data = {
+    "description": f"Entity {entity_name} belongs to {modal_entity_name}",
+    "keywords": "belongs_to,part_of,contained_in",
+    "source_id": chunk_id,
+    "weight": 10.0,   # high weight surfaces belongs_to edges early in graph traversal
+    "file_path": chunk_data.get("file_path", "manual_creation"),
+}
+await self.knowledge_graph_inst.upsert_edge(
+    entity_name, modal_entity_name, relation_data
+)
+```
+
+The `weight` of `10.0` is intentionally high. During retrieval, LightRAG's graph traversal uses edge weights to rank paths, so `belongs_to` relationships surface before generic co-occurrence edges, ensuring that the image or table is retrieved alongside the entities it explains.
+
+## Weighted relationship scoring
+
+Every edge in the graph carries a numeric weight that influences how strongly the relationship is considered during graph traversal. RAG-Anything uses two weight classes:
+
+<CardGroup cols={2}>
+  <Card title="belongs_to edges" icon="link">
+    Weight **10.0**. Added by `_batch_add_belongs_to_relations_type_aware` for every entity found inside a multimodal chunk description. High weight prioritises retrieval of the parent modal entity when any of its sub-entities match a query.
+  </Card>
+  <Card title="LightRAG co-occurrence edges" icon="arrow-right-arrow-left">
+    Weights determined by LightRAG's `merge_nodes_and_edges` logic during standard entity extraction. These encode semantic proximity and co-occurrence frequency across the full document corpus.
+  </Card>
+</CardGroup>
+
+## Query modes
+
+The knowledge graph is queried through LightRAG's four built-in retrieval modes, all accessible via `rag.aquery(query, mode=…)`.
+
+<AccordionGroup>
+  <Accordion title="local — entity neighbourhood">
+    Finds the entities most similar to the query via vector search over `entities_vdb`, then retrieves their immediate graph neighbourhood (directly connected nodes and edges). Best for questions about a specific named concept or entity.
+
+    ```python
+    result = await rag.aquery(
+        "What does the system architecture figure show?",
+        mode="local"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="global — community-level reasoning">
+    Retrieves high-level semantic summaries built from densely-connected clusters of entities in the graph. Best for broad thematic or comparative questions that span multiple sections.
+
+    ```python
+    result = await rag.aquery(
+        "What are the key differences between all methods compared in this paper?",
+        mode="global"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="naive — pure vector search">
+    Bypasses the graph entirely and performs cosine-similarity search over `chunks_vdb`. Fastest mode but loses all relational context.
+
+    ```python
+    result = await rag.aquery(
+        "Find the passage about training data",
+        mode="naive"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="hybrid — vector + graph fusion">
+    Combines `local` entity retrieval with chunk vector search, then merges the results before synthesising an answer. Recommended for most questions involving multimodal documents because it can surface both entities and their neighbouring text chunks.
+
+    ```python
+    result = await rag.aquery(
+        "What are the main findings shown in the figures and tables?",
+        mode="hybrid"
+    )
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  Use `mode="hybrid"` as your default. It captures both the textual context (via vector search over chunks) and the structured relationships (via graph traversal), which is essential when a query touches multimodal content.
+</Tip>
+
+## VLM enhancement at query time
+
+When a `vision_model_func` is provided and `vlm_enhanced` is not explicitly set to `False`, `aquery` automatically delegates to `aquery_vlm_enhanced`. This path:
+
+1. Calls LightRAG with `only_need_prompt=True` to retrieve the context prompt without generating a final answer.
+2. Scans the prompt for `Image Path: …` lines using a regex that matches common image extensions.
+3. Validates each path against safe directories (working dir, output dir, and any `extra_safe_dirs`).
+4. Encodes valid images to base64 and inserts `[VLM_IMAGE_N]` markers into the prompt.
+5. Builds a multimodal message list interleaving text segments and base64 image objects.
+6. Sends the complete message to the vision LLM for a final answer.
+
+```python
+# VLM enhancement is automatic when vision_model_func is present
+vlm_result = await rag.aquery(
+    "Analyse the charts and figures in the document",
+    mode="hybrid"
+    # vlm_enhanced=True is the default when vision_model_func is available
+)
+
+# Explicit control
+vlm_disabled = await rag.aquery(
+    "Summarise the methodology section",
+    mode="hybrid",
+    vlm_enhanced=False   # force text-only even if vision_model_func is set
+)
+```
+
+The security boundary enforced by the path validation prevents prompt-injection attacks from causing the system to load arbitrary files from outside the workspace.
+
+## Why the graph outperforms pure vector search for multimodal RAG
+
+<CardGroup cols={2}>
+  <Card title="Cross-modal bridging" icon="bridge">
+    A text query about "accuracy improvement" can traverse the graph to find a performance table even if the word "accuracy" never appears in the table's caption — because the `belongs_to` edges link the table to entities extracted from its description that _do_ contain the word.
+  </Card>
+  <Card title="Hierarchical context" icon="sitemap">
+    Sections, figures, and equations within the same document section are connected through shared belongs_to targets. Retrieving one automatically surfaces its siblings.
+  </Card>
+  <Card title="Entity disambiguation" icon="tag">
+    Two tables with similar captions are different graph nodes. The graph prevents the vector search from conflating them when a query targets a specific one.
+  </Card>
+  <Card title="Relational questions" icon="circle-nodes">
+    Questions like "which figures support the claim in Section 3?" require traversing edges. Vector search cannot answer them at all; graph traversal can.
+  </Card>
+</CardGroup>

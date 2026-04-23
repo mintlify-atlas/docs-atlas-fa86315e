@@ -1,0 +1,279 @@
+---
+title: "Content list format for direct insertion"
+description: "Schema reference for the content_list structure used by insert_content_list, covering text, image, table, equation, and generic item types."
+---
+
+The `content_list` is the internal representation that RAGAnything uses for all document content. It is produced automatically by the parser during `process_document_complete`, but you can also construct and pass it directly to `insert_content_list` — bypassing the parsing stage entirely. This is the right approach when content comes from an external parser, is generated programmatically, or was previously cached.
+
+A `content_list` is simply a Python `List[Dict[str, Any]]`. Items are processed in list order, and the ordering affects context extraction: surrounding items on the same page or adjacent positions are used to build context for multimodal processors.
+
+## When to use direct insertion
+
+<CardGroup cols={2}>
+  <Card title="External parsers" icon="plug">
+    You already use a custom or proprietary document parser and want to feed its output into RAGAnything without switching to MinerU or Docling.
+  </Card>
+  <Card title="Programmatic content" icon="code">
+    Content is generated dynamically (e.g. database records, API responses, computed tables) rather than extracted from a file.
+  </Card>
+  <Card title="Cached parse results" icon="database">
+    Re-inserting previously parsed content into a different LightRAG instance without re-running the parser.
+  </Card>
+  <Card title="Multiple sources" icon="layers">
+    Combining content from several documents or data sources into a single knowledge base entry under one `file_path`.
+  </Card>
+</CardGroup>
+
+---
+
+## Item schemas
+
+### Text item
+
+<ParamField path="type" type='"text"' required>
+  Must be the string `"text"`.
+</ParamField>
+
+<ParamField path="text" type="str" required>
+  The text content of the block.
+</ParamField>
+
+<ParamField path="text_level" type="int" default="0">
+  Heading depth. `0` means body text. Values `1`–`6` map to Markdown heading levels and are rendered as `# Heading`, `## Heading`, etc. when `include_headers` is enabled in context extraction.
+</ParamField>
+
+<ParamField path="page_idx" type="int" default="0">
+  0-based page number where this content appears in the source document. Used by the page-mode context extractor to find neighbouring items.
+</ParamField>
+
+```python
+{
+    "type": "text",
+    "text": "This is the introduction section of our research paper.",
+    "page_idx": 0,
+}
+```
+
+---
+
+### Image item
+
+<ParamField path="type" type='"image"' required>
+  Must be the string `"image"`.
+</ParamField>
+
+<ParamField path="img_path" type="str" required>
+  Absolute path to the image file on disk. Relative paths are not supported — the `ImageModalProcessor` opens the file directly using this path.
+</ParamField>
+
+<ParamField path="image_caption" type="List[str]" default="[]">
+  List of caption strings associated with the image.
+</ParamField>
+
+<ParamField path="image_footnote" type="List[str]" default="[]">
+  List of footnote strings associated with the image.
+</ParamField>
+
+<ParamField path="page_idx" type="int" default="0">
+  0-based page number where this image appears.
+</ParamField>
+
+<Warning>
+  `img_path` **must be an absolute path**. The processor opens the file at this exact path to encode it as base64 for the vision model. Using a relative path will cause a `FileNotFoundError`.
+</Warning>
+
+```python
+{
+    "type": "image",
+    "img_path": "/absolute/path/to/figure1.jpg",
+    "image_caption": ["Figure 1: System Architecture"],
+    "image_footnote": ["Source: Authors' original design"],
+    "page_idx": 1,
+}
+```
+
+---
+
+### Table item
+
+<ParamField path="type" type='"table"' required>
+  Must be the string `"table"`.
+</ParamField>
+
+<ParamField path="table_body" type="str" required>
+  The table content in Markdown table format.
+</ParamField>
+
+<ParamField path="table_caption" type="List[str]" default="[]">
+  List of caption strings for the table.
+</ParamField>
+
+<ParamField path="table_footnote" type="List[str]" default="[]">
+  List of footnote strings for the table.
+</ParamField>
+
+<ParamField path="page_idx" type="int" default="0">
+  0-based page number where this table appears.
+</ParamField>
+
+```python
+{
+    "type": "table",
+    "table_body": (
+        "| Method | Accuracy | F1-Score |\n"
+        "|--------|----------|----------|\n"
+        "| Ours   | 95.2%    | 0.94     |\n"
+        "| Baseline | 87.3%  | 0.85     |"
+    ),
+    "table_caption": ["Table 1: Performance Comparison"],
+    "table_footnote": ["Results on test dataset"],
+    "page_idx": 2,
+}
+```
+
+---
+
+### Equation item
+
+<ParamField path="type" type='"equation"' required>
+  Must be the string `"equation"`.
+</ParamField>
+
+<ParamField path="latex" type="str" default='""'>
+  LaTeX source of the mathematical formula.
+</ParamField>
+
+<ParamField path="text" type="str" default='""'>
+  Human-readable text description of the equation (used when `latex` is not present or as supplementary context).
+</ParamField>
+
+<ParamField path="text_format" type="str" default='""'>
+  Format identifier for the equation text (e.g. `"latex"`, `"mathml"`). Used by the prompt template.
+</ParamField>
+
+<ParamField path="page_idx" type="int" default="0">
+  0-based page number where this equation appears.
+</ParamField>
+
+```python
+{
+    "type": "equation",
+    "latex": r"P(d|q) = \frac{P(q|d) \cdot P(d)}{P(q)}",
+    "text": "Document relevance probability formula",
+    "page_idx": 3,
+}
+```
+
+---
+
+### Generic item
+
+Any content type not covered above can be represented as a generic item. RAGAnything routes it through the `GenericModalProcessor` fallback.
+
+<ParamField path="type" type="str" required>
+  Any custom type name string (e.g. `"code"`, `"audio_transcript"`, `"citation"`).
+</ParamField>
+
+<ParamField path="content" type="Any" default="{}">
+  The content payload. Can be a string, dict, list, or any JSON-serialisable value.
+</ParamField>
+
+<ParamField path="page_idx" type="int" default="0">
+  0-based page number.
+</ParamField>
+
+```python
+{
+    "type": "code",
+    "content": "def hello_world():\n    print('Hello, world!')",
+    "page_idx": 4,
+}
+```
+
+---
+
+## Complete example
+
+The following `content_list` demonstrates all four standard types in a single document, exactly as shown in the RAG-Anything README:
+
+```python
+import asyncio
+from raganything import RAGAnything, RAGAnythingConfig
+
+content_list = [
+    {
+        "type": "text",
+        "text": "This is the introduction section of our research paper.",
+        "page_idx": 0,
+    },
+    {
+        "type": "image",
+        "img_path": "/absolute/path/to/figure1.jpg",  # IMPORTANT: Use absolute path
+        "image_caption": ["Figure 1: System Architecture"],
+        "image_footnote": ["Source: Authors' original design"],
+        "page_idx": 1,
+    },
+    {
+        "type": "table",
+        "table_body": (
+            "| Method | Accuracy | F1-Score |\n"
+            "|--------|----------|----------|\n"
+            "| Ours   | 95.2%    | 0.94     |\n"
+            "| Baseline | 87.3%  | 0.85     |"
+        ),
+        "table_caption": ["Table 1: Performance Comparison"],
+        "table_footnote": ["Results on test dataset"],
+        "page_idx": 2,
+    },
+    {
+        "type": "equation",
+        "latex": r"P(d|q) = \frac{P(q|d) \cdot P(d)}{P(q)}",
+        "text": "Document relevance probability formula",
+        "page_idx": 3,
+    },
+    {
+        "type": "text",
+        "text": "In conclusion, our method demonstrates superior performance across all metrics.",
+        "page_idx": 4,
+    },
+]
+
+async def main():
+    rag = RAGAnything(
+        config=RAGAnythingConfig(working_dir="./rag_storage"),
+        llm_model_func=my_llm,
+        vision_model_func=my_vlm,
+        embedding_func=my_embed,
+    )
+
+    await rag.insert_content_list(
+        content_list=content_list,
+        file_path="research_paper.pdf",  # Reference name for citations
+        doc_id=None,                     # Auto-generated from content hash
+        display_stats=True,
+    )
+
+    result = await rag.aquery(
+        "What are the key findings and performance metrics?",
+        mode="hybrid",
+    )
+    print(result)
+
+asyncio.run(main())
+```
+
+---
+
+## Important notes
+
+<Note>
+  **Content ordering matters.** Items are processed in list order. The page-mode context extractor uses `page_idx` to find neighbouring text; the chunk-mode extractor uses list position. Keep items in their natural document order for best context quality.
+</Note>
+
+<Warning>
+  **Image paths must be absolute.** The `ImageModalProcessor` reads the file at `img_path` to create a base64 encoding for the vision model. A relative path like `"./images/fig1.jpg"` will raise a `FileNotFoundError`. Use `os.path.abspath()` or `Path.resolve()` to obtain the absolute path before building your content list.
+</Warning>
+
+<Tip>
+  **Re-use across instances.** Because `insert_content_list` accepts a pre-built list, you can parse a document once with `parse_document()`, cache the resulting `content_list` (e.g. as JSON), and later replay it into a fresh LightRAG instance without re-running the parser.
+</Tip>

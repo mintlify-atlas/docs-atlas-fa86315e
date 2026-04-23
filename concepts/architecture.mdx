@@ -1,0 +1,162 @@
+---
+title: "RAG-Anything system architecture overview"
+description: "Explore how RAG-Anything is structured: its LightRAG foundation, mixin-based class design, and five-stage multimodal processing pipeline."
+---
+
+RAG-Anything is built as a layered system on top of [LightRAG](https://github.com/HKUDS/LightRAG), the fast knowledge-graph retrieval engine. The `RAGAnything` class does not inherit from `LightRAG` directly — instead it holds an optional `lightrag` instance and composes additional capabilities through three Python mixins: `QueryMixin`, `ProcessorMixin`, and `BatchMixin`. This composition keeps each concern isolated while giving a single, unified public surface to callers.
+
+## Class composition
+
+```python
+@dataclass
+class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
+    """Multimodal Document Processing Pipeline - Complete document parsing and insertion pipeline"""
+
+    # Core Components
+    lightrag: Optional[LightRAG] = field(default=None)
+    llm_model_func: Optional[Callable] = field(default=None)
+    vision_model_func: Optional[Callable] = field(default=None)
+    embedding_func: Optional[Callable] = field(default=None)
+    config: Optional[RAGAnythingConfig] = field(default=None)
+    lightrag_kwargs: Dict[str, Any] = field(default_factory=dict)
+```
+
+<CardGroup cols={3}>
+  <Card title="QueryMixin" icon="magnifying-glass">
+    All text, multimodal, and VLM-enhanced query methods — `aquery`, `aquery_with_multimodal`, `aquery_vlm_enhanced`.
+  </Card>
+  <Card title="ProcessorMixin" icon="gear">
+    Document parsing, content-list insertion, and multimodal batch processing including the `belongs_to` relationship logic.
+  </Card>
+  <Card title="BatchMixin" icon="layer-group">
+    Folder-level batch processing with concurrency control, progress tracking, and recursive document discovery.
+  </Card>
+</CardGroup>
+
+## LightRAG as the foundation
+
+When you do not supply a pre-built `LightRAG` instance, `RAGAnything` creates one lazily inside `_ensure_lightrag_initialized()` using `working_dir`, `llm_model_func`, `embedding_func`, and any extra parameters passed in `lightrag_kwargs`. When you _do_ supply one, `RAGAnything` inherits its `llm_model_func` and `embedding_func` automatically and only initialises missing storages.
+
+```python
+# Option A — RAGAnything manages LightRAG
+rag = RAGAnything(
+    config=config,
+    llm_model_func=llm_model_func,
+    vision_model_func=vision_model_func,
+    embedding_func=embedding_func,
+)
+
+# Option B — bring your own LightRAG instance
+rag = RAGAnything(
+    lightrag=lightrag_instance,
+    vision_model_func=vision_model_func,
+)
+```
+
+<Note>
+  When passing an existing `LightRAG` instance, `llm_model_func` and `embedding_func` are inherited automatically. You only need to supply `vision_model_func` if image processing is required.
+</Note>
+
+## The five-stage pipeline
+
+Every document processed by RAG-Anything flows through five ordered stages. Understanding this pipeline tells you what happens between calling `process_document_complete()` and being able to query the result.
+
+<Steps>
+  <Step title="Document Parsing Stage">
+    The parser (MinerU by default, or Docling / PaddleOCR) converts a raw file into a structured `content_list` — a Python list of typed dictionaries. Each dictionary has a `type` field (`"text"`, `"image"`, `"table"`, `"equation"`) and carries the relevant payload.
+
+    ```python
+    content_list = [
+        {"type": "text",     "text": "Introduction...",          "page_idx": 0},
+        {"type": "image",    "img_path": "/abs/path/fig1.jpg",   "page_idx": 1,
+         "image_caption": ["Figure 1: System Architecture"]},
+        {"type": "table",    "table_body": "| Method | Acc |\n…", "page_idx": 2,
+         "table_caption": ["Table 1: Performance"]},
+        {"type": "equation", "latex": "P(d|q) = \\frac{P(q|d)·P(d)}{P(q)}", "page_idx": 3},
+    ]
+    ```
+
+    **Key components:**
+    - **MinerU integration** — high-fidelity structure extraction and semantic preservation across complex layouts.
+    - **Adaptive content decomposition** — segments documents into coherent text blocks, visual elements, tables, and equations while preserving contextual relationships.
+    - **Universal format support** — PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and text files through format-specific parsers.
+  </Step>
+
+  <Step title="Multi-Modal Content Understanding & Processing">
+    The `content_list` is split into text items and multimodal items via `separate_content()`. Text items are handed directly to LightRAG's insertion pipeline; multimodal items are dispatched to their respective modal processors concurrently.
+
+    **Key components:**
+    - **Autonomous content categorisation and routing** — every element is type-checked and sent to the optimal processing channel.
+    - **Concurrent multi-pipeline architecture** — `asyncio.gather` runs all modal-processor tasks simultaneously, bounded by LightRAG's `max_parallel_insert` semaphore.
+    - **Document hierarchy extraction** — `page_idx` values from the parser feed the `ContextExtractor`, which surfaces surrounding text to each modal processor.
+  </Step>
+
+  <Step title="Multimodal Analysis Engine">
+    Each modal item is processed by a specialised analyser that transforms raw content into a rich text description plus a structured entity record.
+
+    **Specialised analysers:**
+    - **`ImageModalProcessor`** — sends the base64-encoded image to the vision LLM and extracts a detailed caption, spatial relationships, and an entity name.
+    - **`TableModalProcessor`** — interprets tabular data, identifies statistical patterns, and maps semantic dependencies across rows and columns.
+    - **`EquationModalProcessor`** — parses LaTeX expressions and establishes conceptual mappings between the formula and the surrounding domain knowledge.
+    - **`GenericModalProcessor`** — configurable fallback for custom or emerging content types via the plugin architecture.
+  </Step>
+
+  <Step title="Multimodal Knowledge Graph Index">
+    The entity records produced in Stage 3 are inserted into LightRAG's knowledge graph. Each multimodal entity becomes a graph node, and `belongs_to` edges connect entities extracted from the chunk description back to the modal entity, preserving document hierarchy.
+
+    **Core functions:**
+    - **Multi-modal entity extraction** — multimodal elements become structured knowledge-graph nodes with semantic annotations.
+    - **Cross-modal relationship mapping** — automated inference links textual entities to their visual, tabular, or mathematical counterparts.
+    - **Hierarchical structure preservation** — `belongs_to` chains keep logical content hierarchy intact.
+    - **Weighted relationship scoring** — relevance weights (default `10.0` for `belongs_to`) tune retrieval ranking.
+  </Step>
+
+  <Step title="Modality-Aware Retrieval">
+    At query time, LightRAG's hybrid retrieval combines dense vector search over chunks with graph traversal over the knowledge graph. When a `vision_model_func` is present, the VLM-enhanced query path additionally loads image files from the retrieved context and sends them to the vision model alongside the prompt.
+
+    **Retrieval mechanisms:**
+    - **Vector-graph fusion** — vector similarity finds semantically close chunks; graph traversal surfaces structurally related entities.
+    - **Modality-aware ranking** — retrieved chunks carry `is_multimodal`, `original_type`, and `page_idx` metadata used to weight results.
+    - **Relational coherence** — `belongs_to` relationships ensure that an image or table is retrieved together with its surrounding explanatory text.
+  </Step>
+</Steps>
+
+## Processing mode selection
+
+RAG-Anything chooses one of two processing paths at runtime:
+
+<CardGroup cols={2}>
+  <Card title="Parser-based mode" icon="file-arrow-up">
+    Call `process_document_complete(file_path=…)`. RAG-Anything invokes the configured parser (MinerU, Docling, or PaddleOCR), caches the `content_list` keyed on file path plus modification time, then runs all five pipeline stages.
+
+    Best for: raw PDF, Office, and image files that need OCR or structured extraction.
+  </Card>
+  <Card title="Direct insertion mode" icon="database">
+    Call `insert_content_list(content_list=…, file_path=…)`. Skip the parser entirely and inject a pre-built content list — from an external parser, cached results, or programmatically generated content.
+
+    Best for: pipelines that already have a parsed representation, or multi-source knowledge bases.
+  </Card>
+</CardGroup>
+
+## Configuration reference
+
+`RAGAnythingConfig` reads defaults from environment variables and exposes every knob as a typed dataclass field:
+
+```python
+config = RAGAnythingConfig(
+    working_dir="./rag_storage",        # LightRAG storage root
+    parser="mineru",                     # "mineru" | "docling" | "paddleocr"
+    parse_method="auto",                 # "auto" | "ocr" | "txt"
+    enable_image_processing=True,
+    enable_table_processing=True,
+    enable_equation_processing=True,
+    context_window=1,                    # Pages of surrounding context for modal processors
+    context_mode="page",                 # "page" | "chunk"
+    max_context_tokens=2000,
+    max_concurrent_files=1,              # Batch-mode concurrency
+)
+```
+
+<Tip>
+  Set `use_full_path=True` when images are stored outside the working directory so that retrieval prompts contain absolute paths that the VLM-enhanced query path can load.
+</Tip>

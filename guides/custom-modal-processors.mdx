@@ -1,0 +1,194 @@
+---
+title: "Build custom modal processors for new content types"
+description: "Extend RAG-Anything with processors for audio, video, domain-specific formats, or any content type beyond the built-in image, table, and equation handlers."
+---
+
+RAG-Anything's built-in processors cover images, tables, and equations, but documents often contain domain-specific content that benefits from specialized handling — instrument readings, CAD diagrams, musical notation, or any structured format your LLM understands. You can register a custom processor for any content type by subclassing `GenericModalProcessor` and adding it to the `modal_processors` dictionary.
+
+## The processor hierarchy
+
+All processors inherit from `BaseModalProcessor`, which provides:
+
+- Access to LightRAG storage (`text_chunks`, `chunks_vdb`, `entities_vdb`, etc.)
+- The `modal_caption_func` LLM function used for description generation.
+- A `ContextExtractor` for pulling surrounding document text.
+- `_create_entity_and_chunk()` — the method that stores a chunk and its entity in LightRAG.
+
+`GenericModalProcessor` adds default implementations of `generate_description_only()` and `process_multimodal_content()` using a generic LLM prompt. Subclass it and override these methods to implement custom logic.
+
+## Implementing a custom processor
+
+```python
+from raganything.modalprocessors import GenericModalProcessor
+
+class CustomModalProcessor(GenericModalProcessor):
+    async def process_multimodal_content(
+        self,
+        modal_content,
+        content_type: str,
+        file_path: str = "manual_creation",
+        entity_name: str = None,
+        item_info=None,
+        batch_mode: bool = False,
+        doc_id: str = None,
+        chunk_order_index: int = 0,
+    ):
+        # Step 1: analyze the content with your LLM function
+        enhanced_description = await self.analyze_custom_content(modal_content)
+
+        # Step 2: build entity metadata
+        entity_info = self.create_custom_entity(enhanced_description, entity_name)
+
+        # Step 3: store the chunk and entity in LightRAG
+        return await self._create_entity_and_chunk(
+            enhanced_description,
+            entity_info,
+            file_path,
+            batch_mode,
+            doc_id,
+            chunk_order_index,
+        )
+
+    async def analyze_custom_content(self, modal_content) -> str:
+        """Call modal_caption_func with a domain-specific prompt."""
+        prompt = f"Analyze the following content and describe its key elements:\n{modal_content}"
+        return await self.modal_caption_func(
+            prompt,
+            system_prompt="You are an expert analyst for this content type.",
+        )
+
+    def create_custom_entity(self, description: str, entity_name: str) -> dict:
+        """Build the entity_info dict that _create_entity_and_chunk() expects."""
+        return {
+            "entity_name": entity_name or "Custom Content Entity",
+            "entity_type": "custom",
+            "summary": description[:200],
+        }
+```
+
+## What `_create_entity_and_chunk()` does
+
+`_create_entity_and_chunk()` is the final step in every processor. It:
+
+1. Computes a content-hash-based `chunk_id`.
+2. Stores the chunk text in `text_chunks` and `chunks_vdb` (for retrieval).
+3. Creates a node in `chunk_entity_relation_graph` for the named entity.
+4. Inserts the entity into `entities_vdb`.
+5. Runs LightRAG's entity-relation extraction on the chunk text.
+6. Adds `belongs_to` relationships between extracted entities and the modal entity.
+
+The method signature is:
+
+```python
+await self._create_entity_and_chunk(
+    modal_chunk,         # str: the full chunk text to store
+    entity_info,         # dict: {"entity_name", "entity_type", "summary"}
+    file_path,           # str: reference file name for citations
+    batch_mode,          # bool: True skips immediate graph merge (for batch paths)
+    doc_id,              # str | None: parent document ID
+    chunk_order_index,   # int: position index within the document
+)
+```
+
+## Registering your processor
+
+After instantiating `RAGAnything`, add your processor to `rag.modal_processors` under the content type key it should handle.
+
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+
+rag = RAGAnything(
+    config=RAGAnythingConfig(working_dir="./rag_storage"),
+    llm_model_func=llm_model_func,
+    vision_model_func=vision_model_func,
+    embedding_func=embedding_func,
+)
+
+# Register the custom processor
+rag.modal_processors["audio"] = CustomModalProcessor(
+    lightrag=rag.lightrag,
+    modal_caption_func=llm_model_func,
+)
+```
+
+Any `content_list` item with `"type": "audio"` will now be routed to `CustomModalProcessor`.
+
+## Built-in processor examples
+
+The built-in processors follow the same pattern. Here is how `ImageModalProcessor` and `TableModalProcessor` are initialized in the main `RAGAnything` class:
+
+```python
+from raganything.modalprocessors import ImageModalProcessor, TableModalProcessor
+from lightrag import LightRAG
+
+# ImageModalProcessor receives the vision model function
+# so it can send base64-encoded images to the LLM
+image_processor = ImageModalProcessor(
+    lightrag=rag,
+    modal_caption_func=lambda prompt, system_prompt=None, history_messages=[],
+                              image_data=None, **kwargs:
+        openai_complete_if_cache(
+            "gpt-4o", "",
+            system_prompt=None, history_messages=[],
+            messages=[
+                {"role": "system", "content": system_prompt} if system_prompt else None,
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_data}"
+                    }},
+                ]} if image_data else {"role": "user", "content": prompt},
+            ],
+            api_key=api_key, base_url=base_url, **kwargs,
+        ) if image_data else openai_complete_if_cache(
+            "gpt-4o-mini", prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=api_key, base_url=base_url, **kwargs,
+        )
+)
+
+# TableModalProcessor uses a text-only LLM function
+table_processor = TableModalProcessor(
+    lightrag=rag,
+    modal_caption_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs:
+        openai_complete_if_cache(
+            "gpt-4o-mini", prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=api_key, base_url=base_url, **kwargs,
+        )
+)
+```
+
+## The `modal_caption_func` parameter
+
+`modal_caption_func` is the callable that each processor uses for LLM inference. Its signature must support at minimum:
+
+```python
+async def modal_caption_func(
+    prompt: str,
+    system_prompt: str | None = None,
+    history_messages: list = [],
+    **kwargs,
+) -> str: ...
+```
+
+For image processors, it additionally receives:
+
+```python
+image_data: str | None = None   # base64-encoded image bytes
+```
+
+The function can be any async callable that wraps your preferred LLM provider. Passing the `vision_model_func` you use for queries gives you a single function that handles both image and text prompts.
+
+## When to write a custom processor
+
+Consider writing a custom processor when:
+
+- Your documents contain content types not handled by the built-in processors (audio transcripts, 3D model metadata, geographic coordinates, etc.).
+- You want domain-specific entity names or types that reflect your knowledge ontology.
+- A content type requires a specialized LLM prompt or model to produce accurate descriptions.
+- You need to pre-process content (e.g., decode a proprietary format) before passing it to the LLM.
+
+For simple text-like content, the default `GenericModalProcessor` handles it automatically when no specific processor is registered for a given type — no subclassing needed.

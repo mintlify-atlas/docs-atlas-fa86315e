@@ -1,0 +1,261 @@
+---
+title: "Batch process large document sets with RAGAnything"
+description: "Parse and ingest large document sets in parallel using BatchParser, the RAGAnything batch methods, or the built-in command-line interface."
+---
+
+Batch processing lets you send multiple documents through the parsing pipeline concurrently, then optionally load the parsed results into LightRAG in a second pass. This is useful when onboarding large document collections, building nightly ingestion jobs, or separating the CPU-heavy parsing step from the LLM-heavy RAG insertion step.
+
+## How batch processing works
+
+RAG-Anything uses a two-stage model:
+
+1. **Parse**: `BatchParser` dispatches files to a `ThreadPoolExecutor`, running the selected parser (MinerU, Docling, or PaddleOCR) for each file in parallel.
+2. **RAG insertion**: After parsing, `process_documents_with_rag_batch()` feeds each successfully parsed file through `process_document_complete()` to build the knowledge graph.
+
+You can use either stage independently or chain them together.
+
+## `BatchParser` — standalone parsing
+
+Use `BatchParser` when you want to parse documents without RAG integration, or when you want fine-grained control over the parsing phase.
+
+### Synchronous batch
+
+```python
+from raganything.batch_parser import BatchParser
+
+batch_parser = BatchParser(
+    parser_type="mineru",         # "mineru" | "docling" | "paddleocr"
+    max_workers=4,
+    show_progress=True,
+    timeout_per_file=300,         # seconds per file before timeout
+    skip_installation_check=False,
+)
+
+result = batch_parser.process_batch(
+    file_paths=["doc1.pdf", "doc2.docx", "folder/"],
+    output_dir="./batch_output",
+    parse_method="auto",
+    recursive=True,
+)
+
+print(result.summary())
+print(f"Success rate: {result.success_rate:.1f}%")
+```
+
+### Asynchronous batch
+
+```python
+import asyncio
+from raganything.batch_parser import BatchParser
+
+async def async_batch():
+    batch_parser = BatchParser(
+        parser_type="mineru",
+        max_workers=4,
+        show_progress=True,
+    )
+
+    result = await batch_parser.process_batch_async(
+        file_paths=["doc1.pdf", "doc2.docx"],
+        output_dir="./output",
+        parse_method="auto",
+    )
+    return result
+
+result = asyncio.run(async_batch())
+```
+
+## `RAGAnything` batch methods
+
+If you already have a `RAGAnything` instance, use the built-in batch helpers that automatically inherit your configuration defaults.
+
+### Parse only: `process_documents_batch()`
+
+Parses documents using `BatchParser` under the hood without inserting into LightRAG.
+
+```python
+result = rag.process_documents_batch(
+    file_paths=["doc1.pdf", "doc2.docx"],
+    output_dir="./output",
+    max_workers=4,
+    show_progress=True,
+)
+
+print(f"Processed {len(result.successful_files)} files successfully")
+```
+
+### Parse and ingest: `process_documents_with_rag_batch()`
+
+Parses all documents in batch, then inserts each successfully parsed file into the knowledge graph.
+
+```python
+result = await rag.process_documents_with_rag_batch(
+    file_paths=["doc1.pdf", "doc2.docx", "./research_papers/"],
+    output_dir="./output",
+    max_workers=4,
+    show_progress=True,
+)
+
+print(f"RAG files processed:  {result['successful_rag_files']}")
+print(f"Total time:           {result['total_processing_time']:.2f}s")
+
+# Inspect parse results
+parse_result = result["parse_result"]
+print(parse_result.summary())
+
+# Check per-file RAG results
+for file_path, rag_result in result["rag_results"].items():
+    status = rag_result["status"]
+    print(f"{file_path}: {status}")
+```
+
+### Folder scan: `process_folder_complete()`
+
+Scans a folder for supported files and processes each one through the full document pipeline.
+
+```python
+await rag.process_folder_complete(
+    folder_path="./documents",
+    output_dir="./output",
+    file_extensions=[".pdf", ".docx", ".pptx"],
+    recursive=True,
+    max_workers=4,
+)
+```
+
+## `BatchProcessingResult` fields
+
+Every batch method returns a `BatchProcessingResult` dataclass.
+
+```python
+@dataclass
+class BatchProcessingResult:
+    successful_files: List[str]   # paths of successfully parsed files
+    failed_files: List[str]       # paths that failed
+    total_files: int              # total attempted
+    processing_time: float        # wall-clock seconds
+    errors: Dict[str, str]        # {file_path: error_message}
+    output_dir: str               # output directory used
+    dry_run: bool                 # True when --dry-run was specified
+
+    def summary(self) -> str: ...        # human-readable summary string
+    def success_rate(self) -> float: ... # percentage (0–100)
+```
+
+## CLI usage
+
+The batch parser ships with a CLI entry point you can invoke directly.
+
+```bash
+# Basic batch processing
+python -m raganything.batch_parser examples/sample_docs/ --output ./output --workers 4
+
+# Choose parser and method
+python -m raganything.batch_parser examples/sample_docs/ \
+    --parser mineru --method auto --output ./output
+
+# PaddleOCR with OCR method
+python -m raganything.batch_parser examples/sample_docs/ \
+    --parser paddleocr --method ocr --output ./output
+
+# Preview files without processing (dry run)
+python -m raganything.batch_parser examples/sample_docs/ \
+    --output ./output --dry-run
+
+# Suppress progress bar
+python -m raganything.batch_parser examples/sample_docs/ \
+    --output ./output --no-progress
+
+# Increase per-file timeout for large documents
+python -m raganything.batch_parser examples/sample_docs/ \
+    --output ./output --timeout 600
+```
+
+## Configuration
+
+### `BatchParser` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `parser_type` | `str` | `"mineru"` | Parser to use: `"mineru"`, `"docling"`, or `"paddleocr"` |
+| `max_workers` | `int` | `4` | Number of parallel worker threads |
+| `show_progress` | `bool` | `True` | Display `tqdm` progress bar |
+| `timeout_per_file` | `int` | `300` | Per-file timeout in seconds |
+| `skip_installation_check` | `bool` | `False` | Skip parser installation validation |
+
+### Environment variables
+
+```bash
+MAX_CONCURRENT_FILES=4
+SUPPORTED_FILE_EXTENSIONS=.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt,.md
+RECURSIVE_FOLDER_PROCESSING=true
+PARSER_OUTPUT_DIR=./parsed_output
+```
+
+## Performance recommendations
+
+The optimal worker count depends on your file sizes and available hardware.
+
+| File size | Recommended `max_workers` |
+|-----------|--------------------------|
+| Small (< 1 MB) | 6–8 |
+| Medium (1–100 MB) | 4 |
+| Large (> 100 MB) | 2–3 |
+
+<Note>
+  Each worker holds an entire file in memory during parsing. Reduce `max_workers` if you encounter `MemoryError` on large PDFs.
+</Note>
+
+## Error handling
+
+`BatchProcessingResult.errors` maps each failed file path to its error message. Use this to implement retry logic.
+
+```python
+result = batch_parser.process_batch(
+    file_paths=["doc1.pdf", "doc2.docx", "doc3.pdf"],
+    output_dir="./output",
+)
+
+# Inspect failures
+if result.failed_files:
+    print("Failed files:")
+    for file_path in result.failed_files:
+        error_msg = result.errors.get(file_path, "Unknown error")
+        print(f"  {file_path}: {error_msg}")
+
+# Retry failed files
+if result.failed_files:
+    retry_result = batch_parser.process_batch(
+        file_paths=result.failed_files,
+        output_dir="./output",
+    )
+    print(f"Retry success rate: {retry_result.success_rate:.1f}%")
+```
+
+### Common issues
+
+<AccordionGroup>
+  <Accordion title="Memory errors">
+    Reduce `max_workers` to lower peak memory usage:
+
+    ```python
+    batch_parser = BatchParser(max_workers=2)
+    ```
+  </Accordion>
+
+  <Accordion title="Timeout errors">
+    Increase `timeout_per_file` for large or complex documents:
+
+    ```python
+    batch_parser = BatchParser(timeout_per_file=600)  # 10 minutes
+    ```
+  </Accordion>
+
+  <Accordion title="Parser installation issues">
+    Skip the installation check if you have known package conflicts that don't affect runtime:
+
+    ```python
+    batch_parser = BatchParser(skip_installation_check=True)
+    ```
+  </Accordion>
+</AccordionGroup>

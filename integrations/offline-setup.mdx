@@ -1,0 +1,191 @@
+---
+title: "Run RAG-Anything offline in air-gapped environments"
+description: "Configure RAG-Anything to run without internet access by pre-caching tiktoken models and MinerU weights for air-gapped and restricted deployments."
+---
+
+RAG-Anything can run in fully offline or air-gapped environments, but it requires some preparation before you disconnect from the internet. The main dependency that reaches out to the network at runtime is `tiktoken`, which LightRAG uses for text tokenization. On first use, `tiktoken` attempts to download encoder files from OpenAI's public servers. If those requests fail, LightRAG fails to initialize. This page explains how to pre-cache all required files so that RAG-Anything starts successfully without any network access.
+
+## Why offline deployments fail out of the box
+
+`RAGAnything` builds on `LightRAG`, which uses `tiktoken` for token counting. By default, `tiktoken` fetches its encoder files from `openaipublic.blob.core.windows.net` the first time it runs. In an offline or network-restricted environment this request times out and produces an error like:
+
+```
+Failed to initialize LightRAG instance: HTTPSConnectionPool(
+  host='openaipublic.blob.core.windows.net', port=443
+): Max retries exceeded with url: /encodings/o200k_base.tiktoken
+```
+
+`RAG-Anything` itself does not import `tiktoken` directly — the call happens inside `lightrag`. The fix is to supply a local file cache so `tiktoken` never needs to go online.
+
+## Setting up the tiktoken cache
+
+<Steps>
+  <Step title="Create the cache on a machine with internet access">
+    Run the bundled script to download the required tiktoken encoder files:
+
+    ```bash
+    uv run scripts/create_tiktoken_cache.py
+    ```
+
+    This creates a `tiktoken_cache/` directory in your project root containing the encoder files that `tiktoken` needs.
+  </Step>
+
+  <Step title="Transfer the cache to your offline environment">
+    Copy the `tiktoken_cache/` directory to the same relative location in your offline deployment. For example:
+
+    ```bash
+    # On the online machine, archive the cache
+    tar -czf tiktoken_cache.tar.gz tiktoken_cache/
+
+    # Transfer to the offline machine (via USB, internal file share, etc.)
+    # Then extract:
+    tar -xzf tiktoken_cache.tar.gz
+    ```
+  </Step>
+
+  <Step title="Configure the environment variable">
+    Add `TIKTOKEN_CACHE_DIR` to your `.env` file pointing at the local cache directory:
+
+    ```bash
+    TIKTOKEN_CACHE_DIR=./tiktoken_cache
+    ```
+  </Step>
+
+  <Step title="Load the environment variable before importing LightRAG">
+    The `TIKTOKEN_CACHE_DIR` variable must be set **before** `lightrag` imports `tiktoken`. Load your `.env` file at the very top of your application, before any `lightrag` imports:
+
+    ```python
+    import os
+    import sys
+    import asyncio
+    from pathlib import Path
+    from dotenv import load_dotenv
+
+    # Load environment variables FIRST — before any imports that use tiktoken
+    load_dotenv(dotenv_path=".env", override=False)
+
+    # Now it is safe to import LightRAG (which will import tiktoken)
+    from lightrag import LightRAG
+    from lightrag.utils import logger
+
+    # Rest of your RAG-Anything initialization...
+    ```
+
+    <Warning>
+      If you import `lightrag` before `TIKTOKEN_CACHE_DIR` is set, `tiktoken` will attempt a network download and fail. Import order matters.
+    </Warning>
+  </Step>
+</Steps>
+
+## Testing the offline setup
+
+Follow these steps to verify the setup before deploying to your air-gapped environment:
+
+<Steps>
+  <Step title="Populate the cache">
+    Run `uv run scripts/create_tiktoken_cache.py` to ensure `tiktoken_cache/` is populated.
+  </Step>
+
+  <Step title="Add the environment variable">
+    Confirm `TIKTOKEN_CACHE_DIR=./tiktoken_cache` is present in your `.env` file.
+  </Step>
+
+  <Step title="Disconnect from the internet">
+    Disable your network connection or enable airplane mode to simulate an air-gapped environment.
+  </Step>
+
+  <Step title="Run the application">
+    Start RAG-Anything normally:
+
+    ```bash
+    uv run examples/raganything_example.py requirements.txt
+    ```
+
+    If the application initializes without errors, the offline setup is working correctly.
+  </Step>
+</Steps>
+
+## Pre-downloading MinerU models
+
+MinerU also downloads its ML models on first use. To operate fully offline you need to download these models in advance and configure MinerU to use a local source.
+
+### Download models while online
+
+```bash
+# Download from HuggingFace (default)
+mineru-models-download -s huggingface
+
+# Or from ModelScope (useful in regions with slow HuggingFace access)
+mineru-models-download -s modelscope
+```
+
+### Use local models at parse time
+
+Once downloaded, tell MinerU to use the local cache by setting `source="local"`:
+
+```python
+await rag.process_document_complete(
+    file_path="document.pdf",
+    output_dir="./output/",
+    parser="mineru",
+    source="local",  # Do not attempt to download models
+)
+```
+
+Or via the CLI:
+
+```bash
+python -m raganything.parser document.pdf --source local
+```
+
+<Note>
+  MinerU stores downloaded models in the location reported by `mineru --help`. On most systems this is `~/.cache/mineru/` or a path configured by your HuggingFace Hub cache settings (`HF_HOME`).
+</Note>
+
+## Environment variables for offline mode
+
+| Variable | Description |
+|---|---|
+| `TIKTOKEN_CACHE_DIR` | Path to a local directory containing cached tiktoken encoder files. Set this before importing `lightrag`. |
+| `HF_HOME` | Override the HuggingFace Hub cache root. Set to a local directory to prevent any outbound HuggingFace requests. |
+| `TRANSFORMERS_OFFLINE` | Set to `1` to prevent HuggingFace Transformers from attempting network downloads. |
+| `HF_DATASETS_OFFLINE` | Set to `1` to prevent HuggingFace Datasets from attempting network downloads. |
+
+Example `.env` for a fully offline deployment:
+
+```bash
+# Tiktoken offline cache
+TIKTOKEN_CACHE_DIR=./tiktoken_cache
+
+# HuggingFace offline mode
+HF_HOME=/opt/model-cache/huggingface
+TRANSFORMERS_OFFLINE=1
+HF_DATASETS_OFFLINE=1
+
+# MinerU uses local models
+# (pass source="local" in process_document_complete)
+```
+
+## Air-gapped deployment checklist
+
+<CardGroup cols={2}>
+  <Card title="tiktoken cache" icon="database">
+    Run `create_tiktoken_cache.py` on an online machine and transfer the `tiktoken_cache/` directory.
+  </Card>
+
+  <Card title="MinerU models" icon="cpu">
+    Run `mineru-models-download` on an online machine and mirror the model cache to your air-gapped system.
+  </Card>
+
+  <Card title="Environment variables" icon="settings">
+    Set `TIKTOKEN_CACHE_DIR`, `HF_HOME`, `TRANSFORMERS_OFFLINE`, and `HF_DATASETS_OFFLINE` before starting.
+  </Card>
+
+  <Card title="Import order" icon="code">
+    Load `.env` with `load_dotenv()` before any `lightrag` or `raganything` imports in your application entry point.
+  </Card>
+</CardGroup>
+
+<Tip>
+  If you are packaging RAG-Anything in a Docker image for air-gapped use, bake the `tiktoken_cache/` directory and the MinerU model weights into the image at build time, and set the environment variables in your `Dockerfile` or `docker-compose.yml`.
+</Tip>

@@ -1,0 +1,362 @@
+---
+title: "Compare parser backends: MinerU, Docling, PaddleOCR"
+description: "Choose the right document parser for your workload. MinerU excels at PDFs and images, Docling at Office formats, and PaddleOCR at OCR-intensive tasks."
+---
+
+RAG-Anything supports three first-class parser backends: **MinerU** (the default), **Docling**, and **PaddleOCR**. Your choice of parser directly affects extraction quality, supported file formats, and required system dependencies. Most users should start with MinerU; switch to Docling when Office structure fidelity matters, or to PaddleOCR when you need a lightweight OCR-only pipeline.
+
+## Parser comparison
+
+| Feature | MinerU | Docling | PaddleOCR |
+|---|---|---|---|
+| PDF | Yes | Yes | Yes (OCR-only) |
+| Images (JPG/PNG) | Yes | No | Yes |
+| Extended images (BMP/TIFF/GIF/WebP) | Yes (requires `[image]`) | No | Yes |
+| Office (DOCX/PPTX/XLSX) | Yes (via LibreOffice) | Yes (native) | Yes (via LibreOffice) |
+| HTML | No | Yes | No |
+| Text/Markdown | Yes (via ReportLab) | No | Yes (via ReportLab) |
+| GPU acceleration | Yes | No | Yes (PaddlePaddle) |
+| Formula extraction | Yes | Yes (label-based) | No |
+| Table extraction | Yes | Yes | No |
+| Document structure preservation | Good | Excellent | Text blocks only |
+| Extra install required | `mineru[core]` (default) | `docling` | `pip install raganything[paddleocr]` + `paddlepaddle` |
+
+## Selecting a parser
+
+Pass the `parser` argument to `RAGAnythingConfig` or to `process_document_complete`:
+
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+
+# Select at config level (applies to all documents)
+config = RAGAnythingConfig(
+    working_dir="./rag_storage",
+    parser="mineru",      # "mineru" | "docling" | "paddleocr"
+    parse_method="auto",  # "auto" | "ocr" | "txt"
+)
+
+# Or override per document
+await rag.process_document_complete(
+    file_path="document.pdf",
+    output_dir="./output",
+    parser="docling",
+)
+```
+
+You can also set the default parser via environment variable:
+
+```bash
+PARSER=mineru   # Options: mineru, docling, paddleocr
+```
+
+## Parser details
+
+<Tabs>
+  <Tab title="MinerU (default)">
+    MinerU is the default parser and is the best choice for most workloads. It provides high-fidelity extraction of PDFs and images, including GPU-accelerated OCR, table structure recovery, and formula parsing in LaTeX format.
+
+    ### Installation
+
+    MinerU is installed as a core dependency of `raganything`:
+
+    ```bash
+    pip install raganything
+    # MinerU core is pulled in automatically via mineru[core]
+    ```
+
+    Verify the installation:
+
+    ```bash
+    mineru --version
+    ```
+
+    ### Supported formats
+
+    - **PDF** — all layouts, multi-column, scanned
+    - **Images** — `.png`, `.jpg`, `.jpeg` natively; `.bmp`, `.tiff`, `.gif`, `.webp` with `pip install raganything[image]`
+    - **Office documents** — `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` via LibreOffice conversion
+    - **Text files** — `.txt`, `.md` via ReportLab conversion (`pip install raganything[text]`)
+
+    ### GPU acceleration
+
+    MinerU supports GPU-accelerated inference on CUDA, NPU, and Apple Silicon (MPS):
+
+    ```python
+    await rag.process_document_complete(
+        file_path="document.pdf",
+        output_dir="./output",
+        device="cuda:0",   # "cpu" | "cuda" | "cuda:0" | "npu" | "mps"
+    )
+    ```
+
+    ### MinerU-specific parameters
+
+    All parameters below are passed as keyword arguments to `process_document_complete`:
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `lang` | `str` | OCR language hint, e.g. `"ch"`, `"en"`, `"ja"` |
+    | `device` | `str` | Inference device: `"cpu"`, `"cuda"`, `"cuda:0"`, `"npu"`, `"mps"` |
+    | `start_page` | `int` | First page to parse (0-based, PDF only) |
+    | `end_page` | `int` | Last page to parse (0-based, PDF only) |
+    | `formula` | `bool` | Enable formula extraction (default `True`) |
+    | `table` | `bool` | Enable table extraction (default `True`) |
+    | `backend` | `str` | Parsing backend — see table below |
+    | `source` | `str` | Model source: `"huggingface"`, `"modelscope"`, `"local"` |
+    | `vlm_url` | `str` | VLM service URL when `backend="vlm-http-client"` |
+
+    #### Available backends
+
+    | Backend | Description |
+    |---|---|
+    | `pipeline` | Default pipeline-based extraction |
+    | `hybrid-auto-engine` | Hybrid pipeline + VLM, automatic selection |
+    | `hybrid-http-client` | Hybrid mode connecting to a remote HTTP server |
+    | `vlm-auto-engine` | Full VLM extraction, local engine |
+    | `vlm-http-client` | Full VLM extraction via a remote HTTP server |
+
+    ### Example: advanced MinerU configuration
+
+    ```python
+    await rag.process_document_complete(
+        file_path="document.pdf",
+        output_dir="./output/",
+        parse_method="auto",
+        parser="mineru",
+        lang="ch",              # Chinese OCR optimization
+        device="cuda:0",        # GPU acceleration
+        start_page=0,
+        end_page=10,
+        formula=True,
+        table=True,
+        backend="pipeline",
+        source="huggingface",
+    )
+    ```
+
+    ### VLM backend example
+
+    ```python
+    # Start a VLM HTTP service, then point MinerU at it
+    await rag.process_document_complete(
+        file_path="document.pdf",
+        output_dir="./output/",
+        backend="vlm-http-client",
+        vlm_url="http://127.0.0.1:3000",
+    )
+    ```
+
+    <Note>
+      MinerU 2.0 no longer uses a `magic-pdf.json` configuration file. All settings are passed as command-line parameters or function arguments.
+    </Note>
+  </Tab>
+
+  <Tab title="Docling">
+    Docling is optimized for documents where **structure preservation matters most** — especially Office formats and HTML files. It natively handles DOCX, PPTX, and XLSX without needing LibreOffice for conversion (unlike MinerU), and reconstructs heading hierarchies, tables, and images with high fidelity.
+
+    ### Installation
+
+    ```bash
+    pip install docling
+    ```
+
+    Verify:
+
+    ```bash
+    docling --version
+    ```
+
+    ### Supported formats
+
+    - **PDF** — layout-aware extraction
+    - **Office documents** — `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` (native, no LibreOffice needed)
+    - **HTML** — `.html`, `.htm`, `.xhtml`
+
+    <Warning>
+      Docling does not support plain images (`.png`, `.jpg`) or text files (`.txt`, `.md`). Use MinerU or PaddleOCR for those formats.
+    </Warning>
+
+    ### Example: parse an Office document
+
+    ```python
+    await rag.process_document_complete(
+        file_path="report.docx",
+        output_dir="./output/",
+        parser="docling",
+    )
+    ```
+
+    ### How Docling converts to content_list
+
+    Docling outputs a JSON document tree. RAG-Anything's `DoclingParser` recursively walks that tree and converts each block to the unified `content_list` format used throughout the pipeline:
+
+    - `texts` blocks with `label="formula"` → `{"type": "equation", ...}`
+    - `texts` blocks → `{"type": "text", ...}`
+    - `pictures` blocks → `{"type": "image", ...}` (embedded base64 decoded to PNG)
+    - `tables` blocks → `{"type": "table", ...}`
+  </Tab>
+
+  <Tab title="PaddleOCR">
+    PaddleOCR is a lightweight OCR-focused backend ideal when you need to extract text from scanned images or PDFs and don't require table or formula analysis. It produces simple text blocks compatible with the standard `content_list` processing pipeline.
+
+    ### Installation
+
+    PaddleOCR is an optional dependency. Install the extras and then install the PaddlePaddle backend for your platform:
+
+    <CodeGroup>
+
+    ```bash pip
+    pip install "raganything[paddleocr]"
+    # Then install PaddlePaddle for your platform:
+    # CPU (Linux/Windows/macOS)
+    pip install paddlepaddle
+    # GPU (CUDA 11.8)
+    pip install paddlepaddle-gpu==2.6.1.post118 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+    ```
+
+    ```bash uv
+    uv sync --extra paddleocr
+    # Then install PaddlePaddle for your platform:
+    pip install paddlepaddle
+    ```
+
+    </CodeGroup>
+
+    For the full platform-specific PaddlePaddle install guide, see the [official installation page](https://www.paddlepaddle.org.cn/install/quick).
+
+    ### Supported formats
+
+    - **PDF** — rendered via `pypdfium2` at 2× scale, then OCR'd page-by-page
+    - **Images** — `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tiff`, `.tif`, `.gif`, `.webp`
+    - **Office documents** — `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` (converted to PDF via LibreOffice first)
+    - **Text files** — `.txt`, `.md` (converted to PDF via ReportLab first)
+
+    ### Output format
+
+    PaddleOCR always produces plain text blocks:
+
+    ```python
+    {"type": "text", "text": "extracted line of text", "page_idx": 0}
+    ```
+
+    Table and formula extraction are not available with this backend.
+
+    ### Example
+
+    ```python
+    await rag.process_document_complete(
+        file_path="scanned_invoice.pdf",
+        output_dir="./output/",
+        parser="paddleocr",
+        lang="en",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Office document requirement: LibreOffice
+
+MinerU and PaddleOCR both rely on LibreOffice to convert Office documents (`.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`) to PDF before parsing. Install it for your platform:
+
+<CodeGroup>
+
+```bash Windows
+# Download the installer from the LibreOffice website:
+# https://www.libreoffice.org/download/download/
+```
+
+```bash macOS
+brew install --cask libreoffice
+```
+
+```bash Ubuntu / Debian
+sudo apt-get install libreoffice
+```
+
+```bash CentOS / RHEL
+sudo yum install libreoffice
+```
+
+</CodeGroup>
+
+<Note>
+  Docling handles Office formats natively and does **not** require LibreOffice.
+</Note>
+
+## Verifying parser installation
+
+Call `check_parser_installation()` on your `RAGAnything` instance, or use the parser CLI:
+
+```python
+from raganything import RAGAnything
+
+rag = RAGAnything(config=config, ...)
+is_ready = rag.check_parser_installation()
+print("Ready" if is_ready else "Parser not installed correctly")
+```
+
+```bash
+# Check via CLI
+python -m raganything.parser --check --parser mineru
+python -m raganything.parser --check --parser docling
+python -m raganything.parser --check --parser paddleocr
+```
+
+## Custom parsers
+
+RAG-Anything exposes a registry API so you can plug in any document parser — for example, [Marker](https://github.com/VikParuchuri/marker) or [Unstructured](https://github.com/Unstructured-IO/unstructured).
+
+### Registering a custom parser
+
+Subclass `Parser` and implement `parse_document` and `check_installation`, then call `register_parser` before creating your `RAGAnything` instance:
+
+```python
+from raganything.parser import Parser, register_parser
+
+class MarkerParser(Parser):
+    def check_installation(self) -> bool:
+        try:
+            import marker
+            return True
+        except ImportError:
+            return False
+
+    def parse_pdf(self, pdf_path, output_dir="./output", method="auto", **kw):
+        import marker
+        # ... your implementation returning a content_list ...
+        return content_list
+
+    def parse_document(self, file_path, output_dir="./output", method="auto", **kw):
+        return self.parse_pdf(pdf_path=file_path, output_dir=output_dir, method=method, **kw)
+
+register_parser("marker", MarkerParser)
+```
+
+Then select it by name:
+
+```python
+config = RAGAnythingConfig(parser="marker", ...)
+```
+
+### Registry API reference
+
+| Function | Description |
+|---|---|
+| `register_parser(name, parser_class)` | Register a `Parser` subclass under a unique name. Raises `ValueError` if the name collides with a built-in. |
+| `unregister_parser(name)` | Remove a previously registered custom parser. Raises `KeyError` if not found. |
+| `list_parsers()` | Return a `dict` mapping all parser names (built-in + custom) to their class names. |
+| `get_supported_parsers()` | Return a tuple of all available parser names including custom registrations. |
+
+```python
+from raganything.parser import list_parsers, get_supported_parsers
+
+print(list_parsers())
+# {"mineru": "MineruParser", "docling": "DoclingParser", "paddleocr": "PaddleOCRParser", "marker": "MarkerParser"}
+
+print(get_supported_parsers())
+# ("mineru", "docling", "paddleocr", "marker")
+```
+
+<Warning>
+  The custom parser registry is in-process only. The standalone CLI (`python -m raganything.parser`) does not perform automatic plugin discovery — custom parsers must be registered in the same Python process before invoking RAGAnything APIs.
+</Warning>

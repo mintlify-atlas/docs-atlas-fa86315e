@@ -1,0 +1,318 @@
+---
+title: "Ingest documents into the RAG-Anything pipeline"
+description: "Ingest PDFs, Office files, and images into a multimodal knowledge base using single-file, folder-wide, or direct content-list insertion methods."
+---
+
+RAG-Anything supports three ingestion paths: parsing a single document through the full multimodal pipeline, scanning an entire folder in parallel, or bypassing the parser entirely by injecting a pre-built content list. Each path produces the same knowledge-graph output, so you can mix and match them in the same project.
+
+## End-to-end workflow
+
+<Steps>
+  <Step title="Initialize RAGAnything">
+    Create a `RAGAnythingConfig`, wire up your LLM, vision model, and embedding functions, then instantiate `RAGAnything`.
+
+    ```python
+    import asyncio
+    from raganything import RAGAnything, RAGAnythingConfig
+    from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+    from lightrag.utils import EmbeddingFunc
+
+    async def main():
+        api_key = "your-api-key"
+        base_url = "your-base-url"  # optional
+
+        config = RAGAnythingConfig(
+            working_dir="./rag_storage",
+            parser="mineru",        # mineru | docling | paddleocr
+            parse_method="auto",    # auto | ocr | txt
+            enable_image_processing=True,
+            enable_table_processing=True,
+            enable_equation_processing=True,
+        )
+
+        def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            return openai_complete_if_cache(
+                "gpt-4o-mini", prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key=api_key, base_url=base_url, **kwargs,
+            )
+
+        def vision_model_func(
+            prompt, system_prompt=None, history_messages=[],
+            image_data=None, messages=None, **kwargs
+        ):
+            if messages:
+                return openai_complete_if_cache(
+                    "gpt-4o", "",
+                    system_prompt=None, history_messages=[],
+                    messages=messages,
+                    api_key=api_key, base_url=base_url, **kwargs,
+                )
+            elif image_data:
+                return openai_complete_if_cache(
+                    "gpt-4o", "",
+                    system_prompt=None, history_messages=[],
+                    messages=[
+                        {"role": "system", "content": system_prompt} if system_prompt else None,
+                        {"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_data}"
+                            }},
+                        ]},
+                    ],
+                    api_key=api_key, base_url=base_url, **kwargs,
+                )
+            else:
+                return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+        embedding_func = EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed.func(
+                texts, model="text-embedding-3-large",
+                api_key=api_key, base_url=base_url,
+            ),
+        )
+
+        rag = RAGAnything(
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=embedding_func,
+        )
+    ```
+  </Step>
+
+  <Step title="Process a document">
+    Call `process_document_complete()` on any supported file. The parser extracts content blocks, specialized processors analyze each multimodal element, and everything is inserted into LightRAG's knowledge graph.
+
+    ```python
+    await rag.process_document_complete(
+        file_path="path/to/your/document.pdf",
+        output_dir="./output",
+        parse_method="auto",
+    )
+    ```
+  </Step>
+
+  <Step title="Query the knowledge base">
+    After processing, query the ingested content using any of the available query modes.
+
+    ```python
+    result = await rag.aquery(
+        "What are the main findings shown in the figures and tables?",
+        mode="hybrid",
+    )
+    print(result)
+    ```
+  </Step>
+</Steps>
+
+## Single document: `process_document_complete()`
+
+`process_document_complete()` accepts the full set of parser kwargs that are forwarded to the underlying parser.
+
+```python
+await rag.process_document_complete(
+    file_path="document.pdf",
+    output_dir="./output/",
+    parse_method="auto",       # "auto" | "ocr" | "txt"
+    parser="mineru",           # "mineru" | "docling" | "paddleocr"
+
+    # MinerU-specific kwargs
+    lang="ch",                 # OCR language: "ch", "en", "ja", etc.
+    device="cuda:0",           # "cpu" | "cuda" | "cuda:0" | "npu" | "mps"
+    start_page=0,              # first page to parse (0-based)
+    end_page=10,               # last page to parse (0-based)
+    formula=True,              # enable formula extraction
+    table=True,                # enable table extraction
+    backend="pipeline",        # pipeline | hybrid-auto-engine | vlm-auto-engine | ...
+    source="huggingface",      # "huggingface" | "modelscope" | "local"
+
+    # Standard RAGAnything kwargs
+    display_stats=True,        # print content type summary
+    split_by_character=None,   # character to split text blocks on
+    doc_id=None,               # custom document ID (auto-generated if omitted)
+)
+```
+
+## Folder processing: `process_folder_complete()`
+
+Process an entire directory of documents with controlled concurrency.
+
+```python
+await rag.process_folder_complete(
+    folder_path="./documents",
+    output_dir="./output",
+    file_extensions=[".pdf", ".docx", ".pptx"],
+    recursive=True,
+    max_workers=4,
+)
+```
+
+<Note>
+  `max_workers` controls how many files are processed concurrently. Start with 4 and reduce if you encounter memory pressure from large files.
+</Note>
+
+## Direct content list: `insert_content_list()`
+
+When you already have a parsed content list — from an external parser, a cache, or programmatic generation — you can skip the parsing step entirely.
+
+```python
+content_list = [
+    {
+        "type": "text",
+        "text": "This is the introduction section of our research paper.",
+        "page_idx": 0,
+    },
+    {
+        "type": "image",
+        "img_path": "/absolute/path/to/figure1.jpg",  # must be absolute
+        "image_caption": ["Figure 1: System Architecture"],
+        "image_footnote": ["Source: Authors' original design"],
+        "page_idx": 1,
+    },
+    {
+        "type": "table",
+        "table_body": "| Method | Accuracy | F1-Score |\n|--------|----------|----------|\n| Ours | 95.2% | 0.94 |\n| Baseline | 87.3% | 0.85 |",
+        "table_caption": ["Table 1: Performance Comparison"],
+        "table_footnote": ["Results on test dataset"],
+        "page_idx": 2,
+    },
+    {
+        "type": "equation",
+        "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+        "text": "Document relevance probability formula",
+        "page_idx": 3,
+    },
+    {
+        "type": "text",
+        "text": "In conclusion, our method demonstrates superior performance across all metrics.",
+        "page_idx": 4,
+    },
+]
+
+await rag.insert_content_list(
+    content_list=content_list,
+    file_path="research_paper.pdf",   # reference name used in citations
+    split_by_character=None,
+    split_by_character_only=False,
+    doc_id=None,                      # auto-generated from content hash
+    display_stats=True,
+)
+```
+
+### Content list item format
+
+Each item in the list is a dictionary with a `type` field and type-specific fields.
+
+| Type | Required fields | Optional fields |
+|------|----------------|-----------------|
+| `text` | `text`, `page_idx` | `text_level` (heading depth) |
+| `image` | `img_path` (absolute), `page_idx` | `image_caption`, `image_footnote` |
+| `table` | `table_body`, `page_idx` | `table_caption`, `table_footnote`, `img_path` |
+| `equation` | `text`, `page_idx` | `latex`, `text_format` |
+| `<custom>` | `content`, `page_idx` | any additional fields |
+
+<Warning>
+  `img_path` must be an **absolute** path (e.g., `/home/user/images/chart.jpg`). Relative paths will cause the image processor to fail silently.
+</Warning>
+
+<Note>
+  `page_idx` is **0-based**. The first page of a document is `page_idx: 0`.
+</Note>
+
+## Parser selection
+
+RAG-Anything ships with three parsers. Use the `parser` parameter on `RAGAnythingConfig` or pass it directly to `process_document_complete()`.
+
+<CodeGroup>
+
+```python MinerU (default)
+config = RAGAnythingConfig(
+    parser="mineru",
+    parse_method="auto",  # auto | ocr | txt
+)
+# Best for: PDFs, images, Office documents
+# Supports: GPU acceleration, OCR, formula/table extraction
+# Install: pip install raganything (bundled)
+```
+
+```python Docling
+config = RAGAnythingConfig(
+    parser="docling",
+)
+# Best for: Office documents, HTML files
+# Strengths: Better document structure preservation
+# Install: pip install raganything (bundled)
+```
+
+```python PaddleOCR
+config = RAGAnythingConfig(
+    parser="paddleocr",
+)
+# Best for: OCR-heavy PDFs and images
+# Strengths: Accurate OCR for non-Latin scripts
+# Install: pip install raganything[paddleocr]
+# Also requires: paddlepaddle (see https://www.paddlepaddle.org.cn/install/quick)
+```
+
+</CodeGroup>
+
+## Loading an existing LightRAG instance
+
+If you already have a populated LightRAG knowledge base, you can wrap it with `RAGAnything` to add multimodal processing without re-indexing existing data.
+
+```python
+import asyncio
+from raganything import RAGAnything
+from lightrag import LightRAG
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import EmbeddingFunc
+
+async def load_existing():
+    lightrag_instance = LightRAG(
+        working_dir="./existing_lightrag_storage",
+        llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs:
+            openai_complete_if_cache(
+                "gpt-4o-mini", prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key="your-api-key", **kwargs,
+            ),
+        embedding_func=EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed.func(
+                texts, model="text-embedding-3-large", api_key="your-api-key",
+            ),
+        ),
+    )
+
+    # Loads existing graph data from working_dir
+    await lightrag_instance.initialize_storages()
+    await initialize_pipeline_status()
+
+    rag = RAGAnything(
+        lightrag=lightrag_instance,        # pass existing instance
+        vision_model_func=vision_model_func,
+        # working_dir, llm_model_func, and embedding_func
+        # are inherited from lightrag_instance
+    )
+
+    # Query existing data
+    result = await rag.aquery(
+        "What data has been processed in this LightRAG instance?",
+        mode="hybrid",
+    )
+    print(result)
+
+    # Add new documents to the same knowledge base
+    await rag.process_document_complete(
+        file_path="path/to/new/document.pdf",
+        output_dir="./output",
+    )
+```

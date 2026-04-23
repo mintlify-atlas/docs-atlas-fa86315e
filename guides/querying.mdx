@@ -1,0 +1,184 @@
+---
+title: "Query the RAG-Anything multimodal knowledge graphs"
+description: "Use pure text, VLM-enhanced, and multimodal query modes to retrieve accurate answers from documents with images, tables, and equations."
+---
+
+RAG-Anything exposes three query types on top of LightRAG's four retrieval modes. Pure text queries search the knowledge graph with text alone. VLM-enhanced queries automatically locate images in the retrieved context and send them to a vision model alongside the text. Multimodal queries let you include specific images, tables, or equations in the query itself so the model can compare them against the knowledge base.
+
+## Query modes
+
+LightRAG provides four underlying retrieval modes. You select one with the `mode` parameter on every query call.
+
+| Mode | Description | Best for |
+|------|-------------|----------|
+| `mix` | Combines local entity retrieval with chunk vector search (default) | General-purpose queries |
+| `hybrid` | Alias for `mix` in most LightRAG versions | General-purpose queries |
+| `local` | Searches entity-level neighborhoods in the graph | Specific entities, facts |
+| `global` | Summarizes across the entire knowledge graph | High-level themes and overview |
+| `naive` | Vector similarity search without graph traversal | Simple semantic lookup |
+| `bypass` | Passes the query directly to the LLM without retrieval | When you want pure LLM reasoning |
+
+<Tip>
+  The default mode is `"mix"`. Start there — it performs well across the widest range of question types by combining vector search with graph traversal.
+</Tip>
+
+## Query types
+
+<Tabs>
+  <Tab title="Pure text">
+    Use `aquery()` (async) or `query()` (sync) for direct knowledge-base search. The question is answered using text-only context retrieved from the graph.
+
+    ```python
+    # Async — preferred in async applications
+    text_result = await rag.aquery(
+        "What are the main findings shown in the figures and tables?",
+        mode="hybrid",
+    )
+    print(text_result)
+
+    # Try different modes for different question types
+    local_result  = await rag.aquery("Who are the key authors?", mode="local")
+    global_result = await rag.aquery("Summarize the document themes.", mode="global")
+    naive_result  = await rag.aquery("What is Bayesian inference?", mode="naive")
+
+    # Synchronous version — useful in scripts or notebooks
+    sync_result = rag.query("What is the model architecture?", mode="hybrid")
+    ```
+  </Tab>
+
+  <Tab title="VLM-enhanced">
+    When a `vision_model_func` is provided at initialization, `aquery()` automatically upgrades to VLM-enhanced mode. The pipeline:
+
+    1. Retrieves context from the knowledge graph (text + image paths).
+    2. Loads and base64-encodes any image files found in the context.
+    3. Constructs a multimodal message and sends it to the vision model.
+
+    ```python
+    # Automatic — VLM enhancement is enabled whenever vision_model_func is set
+    vlm_result = await rag.aquery(
+        "Analyze the charts and figures described in the document.",
+        mode="hybrid",
+    )
+
+    # Force-enable VLM enhancement explicitly
+    vlm_enabled = await rag.aquery(
+        "What do the images show in this document?",
+        mode="hybrid",
+        vlm_enhanced=True,
+    )
+
+    # Force-disable to use plain text retrieval even when vision_model_func exists
+    text_only = await rag.aquery(
+        "What do the images show in this document?",
+        mode="hybrid",
+        vlm_enhanced=False,
+    )
+    ```
+
+    <Note>
+      VLM-enhanced queries only activate when image paths are actually found in the retrieved context. If no images are present, the system falls back to a standard text query automatically.
+    </Note>
+
+    The `vision_model_func` must handle both a `messages` keyword argument (for the VLM multimodal path) and a traditional `image_data` argument (for single-image caption generation during document processing). See the [document processing guide](/guides/document-processing) for a complete example of the function signature.
+  </Tab>
+
+  <Tab title="Multimodal">
+    Use `aquery_with_multimodal()` to include specific multimodal content as part of the query. The content is analyzed by the appropriate modal processor and the resulting description is appended to the query before retrieval.
+
+    ```python
+    # Query with a table
+    table_result = await rag.aquery_with_multimodal(
+        "Compare these performance metrics with the document content",
+        multimodal_content=[{
+            "type": "table",
+            "table_data": """Method,Accuracy,Speed
+RAGAnything,95.2%,120ms
+Traditional,87.3%,180ms""",
+            "table_caption": "Performance comparison",
+        }],
+        mode="hybrid",
+    )
+
+    # Query with a LaTeX equation
+    equation_result = await rag.aquery_with_multimodal(
+        "Explain this formula and its relevance to the document content",
+        multimodal_content=[{
+            "type": "equation",
+            "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+            "equation_caption": "Document relevance probability",
+        }],
+        mode="hybrid",
+    )
+
+    # Query with an image
+    image_result = await rag.aquery_with_multimodal(
+        "How does this architecture compare to what is described in the paper?",
+        multimodal_content=[{
+            "type": "image",
+            "img_path": "/absolute/path/to/architecture_diagram.png",
+            "image_caption": ["Figure: Proposed system architecture"],
+        }],
+        mode="hybrid",
+    )
+    ```
+
+    The synchronous variant is `query_with_multimodal()`:
+
+    ```python
+    sync_result = rag.query_with_multimodal(
+        "What does this table tell us about model performance?",
+        multimodal_content=[{
+            "type": "table",
+            "table_data": "Feature,Value\nSpeed,Fast\nAccuracy,High",
+        }],
+        mode="hybrid",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Multimodal content format for queries
+
+When calling `aquery_with_multimodal()`, each item in `multimodal_content` follows the same schema used in `insert_content_list()`.
+
+<CodeGroup>
+
+```python Table content
+{
+    "type": "table",
+    "table_data": "CSV or markdown table string",
+    "table_caption": "Optional caption",
+}
+```
+
+```python Equation content
+{
+    "type": "equation",
+    "latex": "LaTeX expression, e.g. E = mc^2",
+    "equation_caption": "Optional description",
+}
+```
+
+```python Image content
+{
+    "type": "image",
+    "img_path": "/absolute/path/to/image.jpg",
+    "image_caption": ["Optional caption list"],
+    "image_footnote": ["Optional footnote list"],
+}
+```
+
+</CodeGroup>
+
+## How VLM-enhanced queries work internally
+
+When `aquery()` enters VLM-enhanced mode, it performs the following steps:
+
+1. **Retrieve prompt**: Calls LightRAG with `only_need_prompt=True` to get the raw retrieval context without generating a final answer.
+2. **Extract image paths**: Scans the context for patterns matching `Image Path: <path>.<ext>` using a regex.
+3. **Validate paths**: Only loads images located within the working directory, parser output directory, or current working directory (security check).
+4. **Encode images**: Each valid image is base64-encoded and stored temporarily.
+5. **Build multimodal message**: Constructs an interleaved list of text and image content blocks in the format expected by the vision model.
+6. **Call vision model**: Sends the complete multimodal message to `vision_model_func` with the `messages` keyword argument.
+
+Images outside the allowed directories are blocked to prevent indirect prompt injection.

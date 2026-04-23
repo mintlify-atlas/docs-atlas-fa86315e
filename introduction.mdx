@@ -1,0 +1,79 @@
+---
+title: "RAG-Anything: multimodal RAG for real documents"
+description: "An open-source Python library for multimodal RAG that processes PDFs, Office documents, images, tables, and equations through a unified pipeline."
+---
+
+RAG-Anything is an open-source Python library that extends retrieval-augmented generation to handle the full spectrum of document content. Where traditional RAG systems discard images, tables, and mathematical equations, RAG-Anything routes each content type through a dedicated processor and then builds a multimodal knowledge graph that preserves relationships across all modalities. Built on [LightRAG](https://github.com/HKUDS/LightRAG), it delivers a single coherent interface for ingesting and querying complex, mixed-content documents.
+
+## How it works
+
+RAG-Anything implements a five-stage pipeline that transforms raw documents into a queryable multimodal knowledge base.
+
+**Stage 1 — Document parsing.** The system extracts document structure using [MinerU](https://github.com/opendatalab/MinerU), [Docling](https://github.com/DS4SD/docling), or PaddleOCR. Each parser is optimized for different formats: MinerU handles PDFs and images with high-fidelity OCR; Docling preserves the layout of Office documents; PaddleOCR focuses on text extraction from scanned content.
+
+**Stage 2 — Content analysis.** After parsing, the system segments documents into coherent blocks — text passages, images, tables, equations — while preserving the original hierarchy and cross-element relationships.
+
+**Stage 3 — Multimodal analysis engine.** Each content block is routed to a specialized processor. The visual content analyzer uses a vision-language model to generate descriptive captions for images and diagrams. The structured data interpreter identifies patterns and relationships within tables. The mathematical expression parser handles LaTeX formulas with full semantic understanding. Custom processors can be registered for domain-specific content types.
+
+**Stage 4 — Multimodal knowledge graph.** Processed content is transformed into structured graph entities. The system extracts cross-modal relationships — for example, linking a figure to the equation that describes it — and assigns weighted relevance scores to preserve contextual significance.
+
+**Stage 5 — Modality-aware retrieval.** Queries combine vector similarity search with graph traversal. The retrieval engine ranks results according to content type relevance and maintains semantic coherence between retrieved elements, so answers integrate text, images, and structured data naturally.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Universal document support" icon="file-lines">
+    Process PDFs, Word, PowerPoint, Excel, images (JPG, PNG, BMP, TIFF, GIF, WebP), Markdown, and plain text through a unified interface.
+  </Card>
+  <Card title="Specialized modal processors" icon="layer-group">
+    Dedicated analyzers for images, tables, and LaTeX equations, plus an extensible framework for custom content types.
+  </Card>
+  <Card title="Multimodal knowledge graph" icon="share-nodes">
+    Automatic entity extraction and cross-modal relationship mapping powered by LightRAG's graph engine.
+  </Card>
+  <Card title="Three query modes" icon="magnifying-glass">
+    Pure text queries, VLM-enhanced queries that analyze images in retrieved context, and multimodal queries that accept structured content as input.
+  </Card>
+  <Card title="Multiple parser backends" icon="gears">
+    Choose MinerU, Docling, or PaddleOCR based on your document types and accuracy requirements.
+  </Card>
+  <Card title="Direct content insertion" icon="arrow-right-to-bracket">
+    Bypass document parsing entirely by inserting pre-parsed content lists from external sources.
+  </Card>
+</CardGroup>
+
+## Supported formats
+
+### Document types
+
+| Format | Extensions | Notes |
+|--------|-----------|-------|
+| PDF | `.pdf` | Full layout extraction, OCR, formula parsing |
+| Office documents | `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` | Requires LibreOffice |
+| Images | `.jpg`, `.jpeg`, `.png` | Natively supported |
+| Extended images | `.bmp`, `.tiff`, `.gif`, `.webp` | Requires `raganything[image]` |
+| Text files | `.txt`, `.md` | Requires `raganything[text]` |
+
+### Multimodal elements
+
+| Content type | What is extracted |
+|-------------|------------------|
+| Images | VLM-generated captions, spatial relationships, visual semantics |
+| Tables | Structural interpretation, statistical patterns, cross-table relationships |
+| Equations | LaTeX parsing, conceptual mapping to domain knowledge |
+| Generic | Configurable via custom processor plugins |
+
+## Use cases
+
+RAG-Anything is particularly suited for workloads where documents mix content types that text-only RAG cannot handle:
+
+- **Academic research** — Query papers that combine prose, figures, tables, and formulas. Ask about results shown in charts or compare equations across sections.
+- **Technical documentation** — Index engineering specs with embedded diagrams, wiring tables, and formula sheets. Retrieve answers that reference the correct figure.
+- **Financial reports** — Process filings that interleave narrative, data tables, and charts. Answer questions that require reading numbers from a table alongside the surrounding explanation.
+- **Enterprise knowledge management** — Build a searchable knowledge base from a mixed corpus of PDFs, Office files, and images without preprocessing each format separately.
+
+## Next steps
+
+<Card title="Get started in minutes" icon="rocket" href="/quickstart">
+  Follow the quickstart to install RAG-Anything, initialize the pipeline, process your first document, and run a query.
+</Card>

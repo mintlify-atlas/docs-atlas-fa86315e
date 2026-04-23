@@ -1,0 +1,185 @@
+---
+title: "Supported file formats and multimodal content types"
+description: "All file formats RAG-Anything can process, including PDFs, Office documents, images, and text files, plus multimodal content types and parser compatibility."
+---
+
+RAG-Anything supports a wide range of document file formats through its pluggable parser backends, as well as four core multimodal content modalities that the knowledge graph understands natively. Some formats require optional Python extras or system-level dependencies to be installed.
+
+---
+
+## File formats
+
+### PDF files
+
+PDF is the primary supported format and works out of the box with the default MinerU parser — no extra installation required.
+
+| Extension | Supported by | Notes |
+|-----------|-------------|-------|
+| `.pdf` | MinerU, Docling, PaddleOCR | Full text, image, table, and equation extraction |
+
+```bash
+pip install "raganything"
+```
+
+---
+
+### Office documents
+
+Office formats are converted via LibreOffice before being parsed. LibreOffice must be installed at the system level; no additional Python package is needed.
+
+| Extension | Format | Supported by |
+|-----------|--------|-------------|
+| `.doc` | Word 97–2003 | MinerU (via LibreOffice) |
+| `.docx` | Word Open XML | MinerU (via LibreOffice) |
+| `.ppt` | PowerPoint 97–2003 | MinerU (via LibreOffice) |
+| `.pptx` | PowerPoint Open XML | MinerU (via LibreOffice) |
+| `.xls` | Excel 97–2003 | MinerU (via LibreOffice) |
+| `.xlsx` | Excel Open XML | MinerU (via LibreOffice) |
+
+<Steps>
+  <Step title="Install LibreOffice">
+    ```bash
+    # Debian / Ubuntu
+    sudo apt-get install libreoffice
+
+    # macOS
+    brew install libreoffice
+
+    # Windows
+    # Download from https://www.libreoffice.org/download/download/
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    python examples/office_document_test.py --check-libreoffice --file dummy
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `office` extra in `pyproject.toml` is intentionally empty — the dependency is LibreOffice at the OS level, not a Python package.
+</Note>
+
+---
+
+### Image files
+
+Common image formats are supported natively. Less common formats require the `[image]` extra which installs Pillow.
+
+| Extension | Format | Requires |
+|-----------|--------|----------|
+| `.jpg` / `.jpeg` | JPEG | Built-in (MinerU core) |
+| `.png` | PNG | Built-in (MinerU core) |
+| `.bmp` | BMP | `pip install "raganything[image]"` |
+| `.tiff` / `.tif` | TIFF | `pip install "raganything[image]"` |
+| `.gif` | GIF | `pip install "raganything[image]"` |
+| `.webp` | WebP | `pip install "raganything[image]"` |
+
+```bash
+pip install "raganything[image]"
+```
+
+<Note>
+  If the configured parser does not support image parsing, RAGAnything automatically falls back to MinerU for image files.
+</Note>
+
+---
+
+### Text files
+
+Plain text and Markdown files are supported via the `[text]` extra which installs ReportLab for internal PDF conversion.
+
+| Extension | Format | Requires |
+|-----------|--------|----------|
+| `.txt` | Plain text | `pip install "raganything[text]"` |
+| `.md` | Markdown | `pip install "raganything[text]"` |
+
+```bash
+pip install "raganything[text]"
+```
+
+---
+
+### Install all optional extras
+
+```bash
+pip install "raganything[all]"
+```
+
+This installs Pillow, ReportLab, PaddleOCR, pypdfium2, Markdown, WeasyPrint, and Pygments.
+
+---
+
+## Multimodal content types
+
+RAG-Anything natively understands four content modalities. Each maps to a dedicated modal processor that generates rich knowledge-graph entities.
+
+<CardGroup cols={2}>
+  <Card title="Images" icon="image">
+    Photographs, diagrams, charts, screenshots, and any raster image format. Processed by `ImageModalProcessor` using a vision-language model for semantic captioning and entity extraction.
+  </Card>
+  <Card title="Tables" icon="table">
+    Data tables, comparison charts, and statistical summaries in Markdown table format. Processed by `TableModalProcessor` using an LLM for structured data interpretation.
+  </Card>
+  <Card title="Equations" icon="function">
+    LaTeX mathematical formulas and expressions. Processed by `EquationModalProcessor` using an LLM for symbolic interpretation and contextual description.
+  </Card>
+  <Card title="Generic" icon="puzzle">
+    Custom content types (code, audio transcripts, citations, etc.) processed by `GenericModalProcessor`. Extensible — subclass it to build domain-specific processors.
+  </Card>
+</CardGroup>
+
+Individual modalities can be disabled via configuration:
+
+```python
+from raganything import RAGAnythingConfig
+
+config = RAGAnythingConfig(
+    enable_image_processing=True,    # ENABLE_IMAGE_PROCESSING
+    enable_table_processing=True,    # ENABLE_TABLE_PROCESSING
+    enable_equation_processing=False,  # ENABLE_EQUATION_PROCESSING
+)
+```
+
+---
+
+## Parser compatibility matrix
+
+Not all parsers support every format. Use this table to choose the right parser for your document mix.
+
+| Format | MinerU (`mineru`) | Docling (`docling`) | PaddleOCR (`paddleocr`) |
+|--------|:-----------------:|:-------------------:|:-----------------------:|
+| PDF | ✓ | ✓ | ✓ |
+| DOCX / DOC | ✓ (LibreOffice) | ✓ (LibreOffice) | — |
+| PPTX / PPT | ✓ (LibreOffice) | ✓ (LibreOffice) | — |
+| XLSX / XLS | ✓ (LibreOffice) | ✓ (LibreOffice) | — |
+| JPG / PNG | ✓ | — (falls back to MinerU) | ✓ |
+| BMP / TIFF / GIF / WebP | ✓ (`[image]`) | — | — |
+| TXT / MD | ✓ (`[text]`) | — | — |
+
+<Note>
+  When Docling is selected and a file format it does not support natively is encountered (e.g. standalone image files), RAGAnything automatically falls back to MinerU for that file.
+</Note>
+
+---
+
+## Installation quick-reference
+
+| Scenario | Install command |
+|----------|----------------|
+| PDF only (default) | `pip install raganything` |
+| PDF + Office documents | `pip install raganything` + install LibreOffice |
+| PDF + extended image formats | `pip install "raganything[image]"` |
+| PDF + plain text / Markdown | `pip install "raganything[text]"` |
+| PaddleOCR backend | `pip install "raganything[paddleocr]"` |
+| Everything | `pip install "raganything[all]"` + install LibreOffice |
+
+<Tip>
+  You can verify what is installed for a given format with the bundled test scripts:
+
+  ```bash
+  python examples/office_document_test.py --check-libreoffice --file dummy
+  python examples/image_format_test.py --check-pillow --file dummy
+  python examples/text_format_test.py --check-reportlab --file dummy
+  ```
+</Tip>

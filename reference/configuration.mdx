@@ -1,0 +1,268 @@
+---
+title: "RAGAnythingConfig: all settings and env vars"
+description: "All RAGAnythingConfig fields with their environment variable names and defaults, covering parsing, multimodal processing, batch, and context extraction."
+---
+
+`RAGAnythingConfig` is a Python dataclass that controls every aspect of a RAGAnything instance. Every field reads its default value from the corresponding environment variable so that you can configure the system through a `.env` file, shell exports, or programmatic overrides — without changing your source code.
+
+## Directory configuration
+
+<ParamField path="working_dir" type="str" default="./rag_storage">
+  Directory where RAG storage and cache files (KV stores, vector indexes, graph data) are persisted.
+
+  **Environment variable:** `WORKING_DIR`
+</ParamField>
+
+<ParamField path="parser_output_dir" type="str" default="./output">
+  Default output directory for parsed document content (extracted images, intermediate files).
+
+  **Environment variable:** `OUTPUT_DIR`
+</ParamField>
+
+## Parser configuration
+
+<ParamField path="parse_method" type="str" default="auto">
+  Parsing strategy applied to each document.
+
+  | Value | Behaviour |
+  |-------|-----------|
+  | `auto` | Automatically selects the best method per document |
+  | `ocr` | Forces OCR-based extraction for all pages |
+  | `txt` | Forces text-layer extraction (fast, no OCR) |
+
+  **Environment variable:** `PARSE_METHOD`
+</ParamField>
+
+<ParamField path="parser" type="str" default="mineru">
+  Document parser backend to use.
+
+  | Value | Description |
+  |-------|-------------|
+  | `mineru` | [MinerU](https://github.com/opendatalab/MinerU) — default, highest fidelity |
+  | `docling` | IBM Docling parser |
+  | `paddleocr` | PaddleOCR-based parser |
+
+  **Environment variable:** `PARSER`
+</ParamField>
+
+<ParamField path="display_content_stats" type="bool" default="True">
+  When `True`, logs a block-type breakdown after parsing each document (total blocks, count per type).
+
+  **Environment variable:** `DISPLAY_CONTENT_STATS`
+</ParamField>
+
+## Multimodal processing
+
+<ParamField path="enable_image_processing" type="bool" default="True">
+  Enable the `ImageModalProcessor`. When `False`, image blocks from parsed documents are skipped.
+
+  **Environment variable:** `ENABLE_IMAGE_PROCESSING`
+</ParamField>
+
+<ParamField path="enable_table_processing" type="bool" default="True">
+  Enable the `TableModalProcessor`. When `False`, table blocks are skipped.
+
+  **Environment variable:** `ENABLE_TABLE_PROCESSING`
+</ParamField>
+
+<ParamField path="enable_equation_processing" type="bool" default="True">
+  Enable the `EquationModalProcessor`. When `False`, equation blocks are skipped.
+
+  **Environment variable:** `ENABLE_EQUATION_PROCESSING`
+</ParamField>
+
+## Batch processing
+
+<ParamField path="max_concurrent_files" type="int" default="1">
+  Maximum number of files processed in parallel during folder or batch operations. Increase with caution — each file spawns LLM requests and may exhaust rate limits.
+
+  **Environment variable:** `MAX_CONCURRENT_FILES`
+</ParamField>
+
+<ParamField path="supported_file_extensions" type="List[str]" default=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md">
+  File extensions that are eligible for batch processing. Provided as a comma-separated string in the environment variable and parsed into a list at startup.
+
+  **Environment variable:** `SUPPORTED_FILE_EXTENSIONS`
+</ParamField>
+
+<ParamField path="recursive_folder_processing" type="bool" default="True">
+  When `True`, `process_folder_complete` descends into sub-directories recursively.
+
+  **Environment variable:** `RECURSIVE_FOLDER_PROCESSING`
+</ParamField>
+
+## Context extraction
+
+<ParamField path="context_window" type="int" default="1">
+  Number of pages (in `page` mode) or chunks (in `chunk` mode) to include on each side of the current item when building context for multimodal processors.
+
+  **Environment variable:** `CONTEXT_WINDOW`
+</ParamField>
+
+<ParamField path="context_mode" type="str" default="page">
+  Governs how the context window is delimited.
+
+  | Value | Behaviour |
+  |-------|-----------|
+  | `page` | Selects surrounding pages by `page_idx` |
+  | `chunk` | Selects surrounding items by list index |
+
+  **Environment variable:** `CONTEXT_MODE`
+</ParamField>
+
+<ParamField path="max_context_tokens" type="int" default="2000">
+  Hard cap on the number of tokens included in the extracted context string. Truncation prefers sentence boundaries.
+
+  **Environment variable:** `MAX_CONTEXT_TOKENS`
+</ParamField>
+
+<ParamField path="include_headers" type="bool" default="True">
+  When `True`, heading items (non-zero `text_level`) are prefixed with Markdown `#` characters and included in context.
+
+  **Environment variable:** `INCLUDE_HEADERS`
+</ParamField>
+
+<ParamField path="include_captions" type="bool" default="True">
+  When `True`, image and table caption text is included in the context alongside body text.
+
+  **Environment variable:** `INCLUDE_CAPTIONS`
+</ParamField>
+
+<ParamField path="context_filter_content_types" type="List[str]" default='["text"]'>
+  Content types to include when extracting context. Defaults to `["text"]`. Add `"image"` or `"table"` to pull captions from those blocks too.
+
+  **Environment variable:** `CONTEXT_FILTER_CONTENT_TYPES` (comma-separated)
+</ParamField>
+
+<ParamField path="content_format" type="str" default="minerU">
+  Hint passed to `ContextExtractor.extract_context` describing the structure of the content source.
+
+  | Value | Use case |
+  |-------|----------|
+  | `minerU` | Standard content list from MinerU / Docling parsers |
+  | `text_chunks` | Plain list of text strings |
+  | `auto` | Auto-detect from the source type |
+
+  **Environment variable:** `CONTENT_FORMAT`
+</ParamField>
+
+## Path handling
+
+<ParamField path="use_full_path" type="bool" default="False">
+  Controls the file reference stored in LightRAG chunks and entity metadata.
+
+  - `False` — stores only the basename (`document.pdf`)
+  - `True` — stores the full absolute or relative path (`/data/docs/document.pdf`)
+
+  **Environment variable:** `USE_FULL_PATH`
+</ParamField>
+
+---
+
+## Environment file
+
+Copy `env.example` to `.env` in your project root and uncomment the lines you want to override. RAGAnything loads `.env` automatically at import time via `python-dotenv`.
+
+```bash
+### RAGAnything Configuration (Multimodal Document Processing)
+
+### Parser Configuration
+# PARSE_METHOD=auto
+# OUTPUT_DIR=./output
+# PARSER=mineru
+# DISPLAY_CONTENT_STATS=true
+
+### Multimodal Processing Configuration
+# ENABLE_IMAGE_PROCESSING=true
+# ENABLE_TABLE_PROCESSING=true
+# ENABLE_EQUATION_PROCESSING=true
+
+### Batch Processing Configuration
+# MAX_CONCURRENT_FILES=1
+# SUPPORTED_FILE_EXTENSIONS=.pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md
+# RECURSIVE_FOLDER_PROCESSING=true
+
+### Context Extraction Configuration
+# CONTEXT_WINDOW=1
+# CONTEXT_MODE=page
+# MAX_CONTEXT_TOKENS=2000
+# INCLUDE_HEADERS=true
+# INCLUDE_CAPTIONS=true
+# CONTEXT_FILTER_CONTENT_TYPES=text
+# CONTENT_FORMAT=minerU
+```
+
+---
+
+## Programmatic configuration
+
+<Tabs>
+  <Tab title="Dataclass constructor">
+    ```python
+    from raganything import RAGAnythingConfig
+
+    config = RAGAnythingConfig(
+        working_dir="./rag_storage",
+        parser_output_dir="./output",
+        parser="mineru",
+        parse_method="auto",
+        display_content_stats=True,
+        enable_image_processing=True,
+        enable_table_processing=True,
+        enable_equation_processing=True,
+        max_concurrent_files=2,
+        context_window=1,
+        context_mode="page",
+        max_context_tokens=2000,
+        include_headers=True,
+        include_captions=True,
+        context_filter_content_types=["text"],
+        content_format="minerU",
+        use_full_path=False,
+    )
+    ```
+  </Tab>
+  <Tab title="update_config()">
+    After constructing `RAGAnything`, call `update_config` to change individual fields at runtime without recreating the instance:
+
+    ```python
+    from raganything import RAGAnything, RAGAnythingConfig
+
+    rag = RAGAnything(
+        config=RAGAnythingConfig(),
+        llm_model_func=my_llm,
+        embedding_func=my_embed,
+    )
+
+    # Change parser and disable equation processing
+    rag.update_config(
+        parser="docling",
+        enable_equation_processing=False,
+        max_concurrent_files=4,
+    )
+    ```
+  </Tab>
+  <Tab title="update_context_config()">
+    Use `update_context_config` to update context extraction parameters and immediately propagate the changes to all active modal processors:
+
+    ```python
+    rag.update_context_config(
+        context_window=2,
+        context_mode="chunk",
+        max_context_tokens=3000,
+    )
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Deprecated environment variables
+
+<Warning>
+  `MINERU_PARSE_METHOD` is deprecated. Use `PARSE_METHOD` instead.
+
+  If `MINERU_PARSE_METHOD` is set and `PARSE_METHOD` is not, RAGAnything will read the legacy variable and emit a `DeprecationWarning` at startup. Remove `MINERU_PARSE_METHOD` from your environment and set `PARSE_METHOD` to eliminate the warning.
+</Warning>
+
+The Python property `config.mineru_parse_method` is likewise deprecated and proxies to `config.parse_method`. It will be removed in a future release.

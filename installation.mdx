@@ -1,0 +1,185 @@
+---
+title: "Install RAG-Anything and its dependencies"
+description: "Install RAG-Anything from PyPI or source, choose optional extras for extended format support, and set up LibreOffice for Office document processing."
+---
+
+RAG-Anything requires Python 3.10 or later and installs via PyPI with a standard `pip` command. The core package includes MinerU for document parsing and LightRAG for knowledge graph storage. Optional extras enable additional file format support, and LibreOffice is needed separately for Office documents.
+
+## Install from PyPI
+
+<CodeGroup>
+
+```bash Basic
+pip install raganything
+```
+
+```bash All optional extras
+pip install 'raganything[all]'
+```
+
+```bash Extended image formats
+pip install 'raganything[image]'
+```
+
+```bash Text file support
+pip install 'raganything[text]'
+```
+
+```bash PaddleOCR parser
+pip install 'raganything[paddleocr]'
+```
+
+</CodeGroup>
+
+## Optional extras
+
+The following extras enable support for additional file formats and parser backends. They can be combined: `pip install 'raganything[image,text]'`.
+
+| Extra | What it enables | Installs |
+|-------|----------------|---------|
+| `[image]` | BMP, TIFF, GIF, and WebP image formats | Pillow >= 10.0.0 |
+| `[text]` | TXT and MD files (converts to PDF for parsing) | ReportLab >= 4.0.0 |
+| `[paddleocr]` | PaddleOCR parser backend | paddleocr >= 2.7.0, pypdfium2 >= 4.25.0 |
+| `[all]` | All Python optional dependencies | All of the above |
+
+<Note>
+  `[all]` installs all Python-level optional dependencies but does **not** install LibreOffice. Office document support requires a separate LibreOffice installation — see the section below.
+</Note>
+
+## Install from source
+
+Use [uv](https://docs.astral.sh/uv/) for source installs. It manages the virtual environment and dependencies in a single step.
+
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repository
+git clone https://github.com/HKUDS/RAG-Anything.git
+cd RAG-Anything
+
+# Install the package and all dependencies
+uv sync
+
+# Install with specific extras
+uv sync --extra image --extra text
+
+# Install with all optional extras
+uv sync --all-extras
+```
+
+If you encounter network timeouts during install (common for OpenCV packages), set a longer timeout:
+
+```bash
+UV_HTTP_TIMEOUT=120 uv sync
+```
+
+After a source install, run scripts with `uv run` to use the managed environment:
+
+```bash
+uv run python examples/raganything_example.py --help
+```
+
+## LibreOffice for Office documents
+
+Processing `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, and `.xlsx` files requires LibreOffice installed on your system. RAG-Anything calls LibreOffice to convert Office formats to PDF before parsing.
+
+<Tabs>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    sudo apt-get install libreoffice
+    ```
+  </Tab>
+  <Tab title="CentOS / RHEL">
+    ```bash
+    sudo yum install libreoffice
+    ```
+  </Tab>
+  <Tab title="macOS">
+    ```bash
+    brew install --cask libreoffice
+    ```
+  </Tab>
+  <Tab title="Windows">
+    Download and run the installer from the [LibreOffice official website](https://www.libreoffice.org/download/download/).
+  </Tab>
+</Tabs>
+
+You can verify the installation and confirm that RAG-Anything can locate LibreOffice:
+
+```bash
+python examples/office_document_test.py --check-libreoffice --file dummy
+```
+
+## MinerU setup
+
+MinerU is the default document parser. Its models are downloaded automatically the first time you parse a document, so no manual setup is required. To verify that MinerU is correctly installed:
+
+```bash
+# Check the MinerU CLI version
+mineru --version
+
+# Verify that RAGAnything can detect the installation
+python -c "from raganything import RAGAnything; rag = RAGAnything(); print('MinerU installed properly' if rag.check_parser_installation() else 'MinerU installation issue')"
+```
+
+If you need to pre-download MinerU models for offline or air-gapped environments, see the [MinerU model source configuration guide](https://github.com/opendatalab/MinerU/blob/master/README.md#22-model-source-configuration).
+
+## PaddleOCR parser
+
+The PaddleOCR parser requires `paddleocr` plus the `paddlepaddle` deep learning framework. Because `paddlepaddle` ships different builds for CPU and GPU, it is not included in the `[paddleocr]` extra and must be installed separately.
+
+```bash
+# Install the paddleocr extra
+pip install 'raganything[paddleocr]'
+
+# Then install paddlepaddle for your platform
+# CPU-only (most common):
+pip install paddlepaddle
+
+# GPU (CUDA 11.x):
+pip install paddlepaddle-gpu
+```
+
+Follow the [official PaddlePaddle install guide](https://www.paddlepaddle.org.cn/install/quick) for platform-specific instructions, including Apple Silicon and ROCm builds.
+
+## Verify your installation
+
+After installing, confirm that the core import works:
+
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+print("RAG-Anything installed successfully")
+```
+
+To check which optional features are available in your environment:
+
+```bash
+# Check Pillow (extended image formats)
+python -c "import PIL; print('Pillow available:', PIL.__version__)"
+
+# Check ReportLab (text file support)
+python -c "import reportlab; print('ReportLab available:', reportlab.Version)"
+
+# Check PaddleOCR
+python -c "import paddleocr; print('PaddleOCR available')"
+```
+
+## Python version requirement
+
+RAG-Anything requires **Python 3.10 or later**. It is tested on Python 3.10, 3.11, and 3.12.
+
+```bash
+python --version  # Must be 3.10 or later
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build a working pipeline and process your first document
+  </Card>
+  <Card title="Parser integrations" icon="plug" href="/integrations/parsers">
+    Compare MinerU, Docling, and PaddleOCR for your use case
+  </Card>
+</CardGroup>

@@ -1,80 +1,355 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "RAG-Anything quickstart: process and query docs"
+description: "Install RAG-Anything, configure your LLM and embedding functions, process a document, and run your first multimodal query in five steps."
 ---
 
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide walks you through building a working RAG-Anything pipeline from scratch. By the end you will have installed the library, wired up an OpenAI-compatible LLM and embedding function, ingested a PDF, and run both a text query and a multimodal query against the processed content.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  MinerU — the default document parser — downloads its models automatically on first use. The initial run will take a few minutes while the models are fetched. Subsequent runs use the cached models. See the [installation page](/installation) for details on verifying your MinerU setup.
 </Note>
+
+<Steps>
+  <Step title="Install RAG-Anything">
+    Install the package from PyPI:
+
+    ```bash
+    pip install raganything
+    ```
+
+    To enable support for extended image formats (BMP, TIFF, GIF, WebP) and plain-text files (TXT, MD), install with all optional Python dependencies:
+
+    ```bash
+    pip install 'raganything[all]'
+    ```
+
+    For Office documents (`.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`) you also need LibreOffice installed on your system. See the [installation page](/installation) for platform-specific instructions.
+  </Step>
+
+  <Step title="Set up your environment">
+    Create a `.env` file in your project directory with your API credentials:
+
+    ```bash
+    OPENAI_API_KEY=your_openai_api_key
+    OPENAI_BASE_URL=https://api.openai.com/v1  # Optional: override for compatible endpoints
+    OUTPUT_DIR=./output                          # Directory for parsed document output
+    PARSER=mineru                                # Parser: mineru, docling, or paddleocr
+    PARSE_METHOD=auto                            # Parsing method: auto, ocr, or txt
+    ```
+
+    RAG-Anything reads these values at runtime. You can also pass them directly as constructor arguments if you prefer not to use a `.env` file.
+  </Step>
+
+  <Step title="Initialize RAGAnything">
+    RAG-Anything requires three functions: an LLM function for text tasks, a vision model function for image analysis, and an embedding function for vector search. The example below uses OpenAI's `gpt-4o-mini`, `gpt-4o`, and `text-embedding-3-large`.
+
+    ```python
+    import asyncio
+    from raganything import RAGAnything, RAGAnythingConfig
+    from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+    from lightrag.utils import EmbeddingFunc
+
+    async def main():
+        api_key = "your-api-key"
+        base_url = "your-base-url"  # Optional
+
+        config = RAGAnythingConfig(
+            working_dir="./rag_storage",
+            parser="mineru",
+            parse_method="auto",
+            enable_image_processing=True,
+            enable_table_processing=True,
+            enable_equation_processing=True,
+        )
+
+        def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            return openai_complete_if_cache(
+                "gpt-4o-mini",
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
+            )
+
+        def vision_model_func(
+            prompt, system_prompt=None, history_messages=[], image_data=None, messages=None, **kwargs
+        ):
+            # messages format is used for VLM-enhanced queries (multiple images in context)
+            if messages:
+                return openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=messages,
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
+                )
+            # Single-image format used during document processing
+            elif image_data:
+                return openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=[
+                        {"role": "system", "content": system_prompt}
+                        if system_prompt
+                        else None,
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_data}"
+                                    },
+                                },
+                            ],
+                        }
+                        if image_data
+                        else {"role": "user", "content": prompt},
+                    ],
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
+                )
+            # Fall back to text-only LLM for prompts without images
+            else:
+                return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+        embedding_func = EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed.func(
+                texts,
+                model="text-embedding-3-large",
+                api_key=api_key,
+                base_url=base_url,
+            ),
+        )
+
+        rag = RAGAnything(
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=embedding_func,
+        )
+    ```
+
+    `RAGAnythingConfig` accepts all settings as constructor arguments or reads them from environment variables. The `working_dir` is where the knowledge graph and vector index are persisted between runs.
+  </Step>
+
+  <Step title="Process a document">
+    Call `process_document_complete` with the path to your file. RAG-Anything parses the document, routes each content block through the appropriate modal processor, and inserts the results into the knowledge graph.
+
+    ```python
+        await rag.process_document_complete(
+            file_path="path/to/your/document.pdf",
+            output_dir="./output",
+            parse_method="auto"
+        )
+    ```
+
+    For a folder of documents, use `process_folder_complete`:
+
+    ```python
+        await rag.process_folder_complete(
+            folder_path="./documents",
+            output_dir="./output",
+            file_extensions=[".pdf", ".docx", ".pptx"],
+            recursive=True,
+            max_workers=4
+        )
+    ```
+  </Step>
+
+  <Step title="Run a query">
+    RAG-Anything supports three query types. Use `aquery` for text and VLM-enhanced queries, and `aquery_with_multimodal` to include structured content in the query itself.
+
+    **Text query** — searches the full knowledge base using hybrid vector-graph retrieval:
+
+    ```python
+        text_result = await rag.aquery(
+            "What are the main findings shown in the figures and tables?",
+            mode="hybrid"
+        )
+        print("Text query result:", text_result)
+    ```
+
+    **Multimodal query** — attaches structured content (an equation, table, or image) alongside the question:
+
+    ```python
+        multimodal_result = await rag.aquery_with_multimodal(
+            "Explain this formula and its relevance to the document content",
+            multimodal_content=[{
+                "type": "equation",
+                "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+                "equation_caption": "Document relevance probability"
+            }],
+            mode="hybrid"
+        )
+        print("Multimodal query result:", multimodal_result)
+    ```
+
+    The `mode` parameter controls retrieval strategy: `"hybrid"` combines local and global graph traversal, `"local"` focuses on nearby entities, `"global"` searches the full graph, and `"naive"` uses plain vector search.
+  </Step>
+</Steps>
+
+## Complete example
+
+The following is the full working script combining all five steps above:
+
+```python
+import asyncio
+from raganything import RAGAnything, RAGAnythingConfig
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.utils import EmbeddingFunc
+
+async def main():
+    # Set up API configuration
+    api_key = "your-api-key"
+    base_url = "your-base-url"  # Optional
+
+    # Create RAGAnything configuration
+    config = RAGAnythingConfig(
+        working_dir="./rag_storage",
+        parser="mineru",  # Parser selection: mineru, docling, or paddleocr
+        parse_method="auto",  # Parse method: auto, ocr, or txt
+        enable_image_processing=True,
+        enable_table_processing=True,
+        enable_equation_processing=True,
+    )
+
+    # Define LLM model function
+    def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+        return openai_complete_if_cache(
+            "gpt-4o-mini",
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=api_key,
+            base_url=base_url,
+            **kwargs,
+        )
+
+    # Define vision model function for image processing
+    def vision_model_func(
+        prompt, system_prompt=None, history_messages=[], image_data=None, messages=None, **kwargs
+    ):
+        # If messages format is provided (for multimodal VLM enhanced query), use it directly
+        if messages:
+            return openai_complete_if_cache(
+                "gpt-4o",
+                "",
+                system_prompt=None,
+                history_messages=[],
+                messages=messages,
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
+            )
+        # Traditional single image format
+        elif image_data:
+            return openai_complete_if_cache(
+                "gpt-4o",
+                "",
+                system_prompt=None,
+                history_messages=[],
+                messages=[
+                    {"role": "system", "content": system_prompt}
+                    if system_prompt
+                    else None,
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_data}"
+                                },
+                            },
+                        ],
+                    }
+                    if image_data
+                    else {"role": "user", "content": prompt},
+                ],
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
+            )
+        # Pure text format
+        else:
+            return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+    # Define embedding function
+    embedding_func = EmbeddingFunc(
+        embedding_dim=3072,
+        max_token_size=8192,
+        func=lambda texts: openai_embed.func(
+            texts,
+            model="text-embedding-3-large",
+            api_key=api_key,
+            base_url=base_url,
+        ),
+    )
+
+    # Initialize RAGAnything
+    rag = RAGAnything(
+        config=config,
+        llm_model_func=llm_model_func,
+        vision_model_func=vision_model_func,
+        embedding_func=embedding_func,
+    )
+
+    # Process a document
+    await rag.process_document_complete(
+        file_path="path/to/your/document.pdf",
+        output_dir="./output",
+        parse_method="auto"
+    )
+
+    # Pure text query - for basic knowledge base search
+    text_result = await rag.aquery(
+        "What are the main findings shown in the figures and tables?",
+        mode="hybrid"
+    )
+    print("Text query result:", text_result)
+
+    # Multimodal query with specific multimodal content
+    multimodal_result = await rag.aquery_with_multimodal(
+    "Explain this formula and its relevance to the document content",
+    multimodal_content=[{
+        "type": "equation",
+        "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+        "equation_caption": "Document relevance probability"
+    }],
+    mode="hybrid"
+)
+    print("Multimodal query result:", multimodal_result)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## What to read next
+
+<CardGroup cols={2}>
+  <Card title="Installation details" icon="download" href="/installation">
+    All install options, optional extras, LibreOffice setup, and MinerU verification
+  </Card>
+  <Card title="Document processing guide" icon="file-import" href="/guides/document-processing">
+    Single files, folders, and direct content list insertion
+  </Card>
+  <Card title="Querying guide" icon="circle-question" href="/guides/querying">
+    Query modes, VLM-enhanced queries, and multimodal query patterns
+  </Card>
+  <Card title="Configuration reference" icon="sliders" href="/reference/configuration">
+    All RAGAnythingConfig parameters and environment variables
+  </Card>
+</CardGroup>

@@ -1,0 +1,945 @@
+---
+title: "RAG-Anything Python API: classes and methods"
+description: "Complete reference for the RAG-Anything public Python API: RAGAnything, modal processors, ContextExtractor, BatchParser, callbacks, and resilience utilities."
+---
+
+RAG-Anything exposes a layered public API. The `RAGAnything` class is the primary entry point for most use cases. Lower-level classes — modal processors, `ContextExtractor`, `BatchParser` — are available for advanced integrations. Callbacks, prompt management, and resilience decorators are optional add-ons imported from the top-level `raganything` package.
+
+---
+
+## RAGAnything
+
+`RAGAnything` is a dataclass that composes three mixins — `ProcessorMixin`, `BatchMixin`, and `QueryMixin` — providing the complete document-processing-to-query pipeline.
+
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+```
+
+### Constructor
+
+<AccordionGroup>
+  <Accordion title="RAGAnything(...)">
+    ```python
+    @dataclass
+    class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
+        lightrag: Optional[LightRAG] = None
+        llm_model_func: Optional[Callable] = None
+        vision_model_func: Optional[Callable] = None
+        embedding_func: Optional[Callable] = None
+        config: Optional[RAGAnythingConfig] = None
+        lightrag_kwargs: Dict[str, Any] = field(default_factory=dict)
+    ```
+
+    <ParamField path="lightrag" type="LightRAG | None" default="None">
+      Pre-initialised `LightRAG` instance. When provided, `llm_model_func` and `embedding_func` are inherited from it and `lightrag_kwargs` is ignored.
+    </ParamField>
+
+    <ParamField path="llm_model_func" type="Callable | None" default="None">
+      LLM callable used for text analysis and entity extraction. Required when `lightrag` is not provided.
+    </ParamField>
+
+    <ParamField path="vision_model_func" type="Callable | None" default="None">
+      Vision-language model callable for image captioning and VLM-enhanced queries. When omitted, image processing falls back to the LLM.
+    </ParamField>
+
+    <ParamField path="embedding_func" type="Callable | None" default="None">
+      Embedding callable for text vectorisation. Required when `lightrag` is not provided.
+    </ParamField>
+
+    <ParamField path="config" type="RAGAnythingConfig | None" default="None">
+      Configuration object. When `None`, a default `RAGAnythingConfig()` is constructed, which reads from environment variables. See the [configuration reference](/reference/configuration).
+    </ParamField>
+
+    <ParamField path="lightrag_kwargs" type="Dict[str, Any]" default="{}">
+      Extra keyword arguments forwarded verbatim to `LightRAG(...)` when RAGAnything creates its own LightRAG instance. Common keys include `kv_storage`, `vector_storage`, `graph_storage`, `top_k`, `chunk_token_size`, `embedding_batch_num`, `max_parallel_insert`, and `enable_llm_cache`.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+### Document processing
+
+<AccordionGroup>
+  <Accordion title="process_document_complete(...)">
+    ```python
+    async def process_document_complete(
+        self,
+        file_path: str,
+        output_dir: str = None,
+        parse_method: str = None,
+        display_stats: bool = None,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+        doc_id: str | None = None,
+        file_name: str | None = None,
+        **kwargs,
+    ) -> None
+    ```
+
+    Full pipeline: parse → separate text/multimodal → insert text into LightRAG → process multimodal items.
+
+    <ParamField path="file_path" type="str" required>
+      Path to the document file to process.
+    </ParamField>
+
+    <ParamField path="output_dir" type="str" default="config.parser_output_dir">
+      Directory for parser output artefacts (extracted images, intermediate files).
+    </ParamField>
+
+    <ParamField path="parse_method" type="str" default="config.parse_method">
+      Override the parsing strategy (`"auto"`, `"ocr"`, or `"txt"`).
+    </ParamField>
+
+    <ParamField path="display_stats" type="bool" default="config.display_content_stats">
+      Log a content block breakdown after parsing.
+    </ParamField>
+
+    <ParamField path="split_by_character" type="str | None" default="None">
+      Optional character used to split extracted text into chunks before LightRAG insertion.
+    </ParamField>
+
+    <ParamField path="split_by_character_only" type="bool" default="False">
+      When `True` and `split_by_character` is set, split exclusively on that character rather than combining it with the default token-based splitter.
+    </ParamField>
+
+    <ParamField path="doc_id" type="str | None" default="None">
+      Explicit document ID. Auto-generated from content hash when omitted.
+    </ParamField>
+
+    <ParamField path="**kwargs">
+      Additional parser parameters forwarded to the underlying parser (e.g. `lang`, `device`, `start_page`, `end_page`, `formula`, `table`, `backend`, `source`).
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="process_folder_complete(...)">
+    ```python
+    async def process_folder_complete(
+        self,
+        folder_path: str,
+        output_dir: str = None,
+        parse_method: str = None,
+        display_stats: bool = None,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+        file_extensions: Optional[List[str]] = None,
+        recursive: bool = None,
+        max_workers: int = None,
+    ) -> None
+    ```
+
+    Process all supported files in a directory. Files are processed concurrently up to `max_workers`.
+
+    <ParamField path="folder_path" type="str" required>
+      Path to the directory to scan.
+    </ParamField>
+
+    <ParamField path="file_extensions" type="List[str] | None" default="config.supported_file_extensions">
+      Filter to only these extensions (e.g. `[".pdf", ".docx"]`).
+    </ParamField>
+
+    <ParamField path="recursive" type="bool" default="config.recursive_folder_processing">
+      Descend into sub-directories when `True`.
+    </ParamField>
+
+    <ParamField path="max_workers" type="int" default="config.max_concurrent_files">
+      Maximum number of files processed in parallel.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="process_documents_batch(...)">
+    ```python
+    def process_documents_batch(
+        self,
+        file_paths: List[str],
+        output_dir: Optional[str] = None,
+        parse_method: Optional[str] = None,
+        max_workers: Optional[int] = None,
+        recursive: Optional[bool] = None,
+        show_progress: bool = True,
+        **kwargs,
+    ) -> BatchProcessingResult
+    ```
+
+    Parse multiple documents in parallel using `BatchParser`. This is a synchronous method that runs parsing only — it does not insert results into LightRAG. Use `process_documents_with_rag_batch` to combine parsing and RAG insertion.
+
+    <ParamField path="file_paths" type="List[str]" required>
+      File paths or directory paths to process.
+    </ParamField>
+
+    <ParamField path="show_progress" type="bool" default="True">
+      Display a `tqdm` progress bar.
+    </ParamField>
+
+    <ResponseField name="return" type="BatchProcessingResult">
+      Results dataclass with `successful_files`, `failed_files`, `total_files`, `processing_time`, `errors`, and `success_rate`.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="process_documents_batch_async(...)">
+    ```python
+    async def process_documents_batch_async(
+        self,
+        file_paths: List[str],
+        output_dir: Optional[str] = None,
+        parse_method: Optional[str] = None,
+        max_workers: Optional[int] = None,
+        recursive: Optional[bool] = None,
+        show_progress: bool = True,
+        **kwargs,
+    ) -> BatchProcessingResult
+    ```
+
+    Async version of `process_documents_batch`. Runs the `ThreadPoolExecutor`-backed batch parser without blocking the event loop.
+  </Accordion>
+
+  <Accordion title="process_documents_with_rag_batch(...)">
+    ```python
+    async def process_documents_with_rag_batch(
+        self,
+        file_paths: List[str],
+        output_dir: Optional[str] = None,
+        parse_method: Optional[str] = None,
+        max_workers: Optional[int] = None,
+        recursive: Optional[bool] = None,
+        show_progress: bool = True,
+        **kwargs,
+    ) -> Dict[str, Any]
+    ```
+
+    Two-stage pipeline: batch-parse all documents, then insert each successfully parsed document into LightRAG with `process_document_complete`.
+
+    <ResponseField name="return" type="Dict[str, Any]">
+      Dict with keys `parse_result` (`BatchProcessingResult`), `rag_results` (per-file status dict), `total_processing_time`, `successful_rag_files`, and `failed_rag_files`.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="get_supported_file_extensions()">
+    ```python
+    def get_supported_file_extensions() -> List[str]
+    ```
+
+    Returns the list of file extensions supported by the currently configured parser backend.
+  </Accordion>
+
+  <Accordion title="filter_supported_files(...)">
+    ```python
+    def filter_supported_files(
+        file_paths: List[str],
+        recursive: Optional[bool] = None,
+    ) -> List[str]
+    ```
+
+    Walk the provided paths and return only files with extensions supported by the configured parser.
+  </Accordion>
+
+  <Accordion title="insert_content_list(...)">
+    ```python
+    async def insert_content_list(
+        self,
+        content_list: List[Dict[str, Any]],
+        file_path: str = "unknown_document",
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+        doc_id: str | None = None,
+        display_stats: bool = None,
+    ) -> None
+    ```
+
+    Insert a pre-parsed content list directly, bypassing the document parsing stage. See the [content list format reference](/reference/content-formats) for the item schema.
+
+    <ParamField path="content_list" type="List[Dict[str, Any]]" required>
+      Ordered list of content items (text, image, table, equation, or generic).
+    </ParamField>
+
+    <ParamField path="file_path" type="str" default='"unknown_document"'>
+      Reference name stored as the document source in LightRAG chunks and entities.
+    </ParamField>
+
+    <ParamField path="doc_id" type="str | None" default="None">
+      Explicit document ID. Auto-generated from content hash when omitted.
+    </ParamField>
+
+    <ParamField path="display_stats" type="bool" default="config.display_content_stats">
+      Log a content block breakdown after processing.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+### Querying
+
+<AccordionGroup>
+  <Accordion title="aquery(...) — async">
+    ```python
+    async def aquery(
+        self,
+        query: str,
+        mode: str = "mix",
+        system_prompt: str | None = None,
+        **kwargs,
+    ) -> str
+    ```
+
+    Text query against the LightRAG knowledge base. When `vision_model_func` is configured, VLM-enhanced mode is automatically engaged — image paths found in the retrieved context are encoded as base64 and sent to the VLM.
+
+    <ParamField path="query" type="str" required>
+      Query text.
+    </ParamField>
+
+    <ParamField path="mode" type="str" default='"mix"'>
+      LightRAG retrieval strategy. One of `"local"`, `"global"`, `"hybrid"`, `"naive"`, `"mix"`, or `"bypass"`.
+    </ParamField>
+
+    <ParamField path="system_prompt" type="str | None" default="None">
+      Optional system prompt appended to the LightRAG query prompt.
+    </ParamField>
+
+    <ParamField path="vlm_enhanced" type="bool">
+      Override VLM behaviour. `True` forces VLM processing; `False` disables it. Defaults to `True` when `vision_model_func` is available.
+    </ParamField>
+
+    <ResponseField name="return" type="str">
+      Generated answer from the LLM.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="query(...) — sync">
+    ```python
+    def query(
+        self,
+        query: str,
+        mode: str = "mix",
+        **kwargs,
+    ) -> str
+    ```
+
+    Synchronous wrapper around `aquery`. Shares all parameters and return type.
+  </Accordion>
+
+  <Accordion title="aquery_with_multimodal(...)">
+    ```python
+    async def aquery_with_multimodal(
+        self,
+        query: str,
+        multimodal_content: List[Dict[str, Any]] = None,
+        mode: str = "mix",
+        **kwargs,
+    ) -> str
+    ```
+
+    Multimodal query that enriches the text query with descriptions generated from provided content items (images, tables, equations).
+
+    <ParamField path="query" type="str" required>
+      Base query text.
+    </ParamField>
+
+    <ParamField path="multimodal_content" type="List[Dict[str, Any]] | None" default="None">
+      List of content items. Same schema as the `content_list` items in `insert_content_list`. When `None` or empty, falls back to a plain `aquery` call.
+    </ParamField>
+
+    <ParamField path="mode" type="str" default='"mix"'>
+      LightRAG retrieval strategy.
+    </ParamField>
+
+    <ResponseField name="return" type="str">
+      Generated answer.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="query_with_multimodal(...) — sync">
+    ```python
+    def query_with_multimodal(
+        self,
+        query: str,
+        multimodal_content: List[Dict[str, Any]] = None,
+        mode: str = "mix",
+        **kwargs,
+    ) -> str
+    ```
+
+    Synchronous wrapper around `aquery_with_multimodal`. Shares all parameters and return type. Useful in scripts or Jupyter notebooks where an event loop is not already running.
+  </Accordion>
+</AccordionGroup>
+
+### Lifecycle and utilities
+
+<AccordionGroup>
+  <Accordion title="finalize_storages()">
+    ```python
+    async def finalize_storages() -> None
+    ```
+
+    Flush and close the parse cache and all LightRAG internal storages. Call this in a `finally` block or application shutdown handler to ensure all data is persisted to disk.
+  </Accordion>
+
+  <Accordion title="check_parser_installation()">
+    ```python
+    def check_parser_installation() -> bool
+    ```
+
+    Returns `True` if the configured parser backend (MinerU, Docling, or PaddleOCR) is properly installed and available.
+  </Accordion>
+
+  <Accordion title="update_config(**kwargs)">
+    ```python
+    def update_config(**kwargs) -> None
+    ```
+
+    Update one or more `RAGAnythingConfig` fields by name. Unknown keys are logged as warnings.
+
+    ```python
+    rag.update_config(parser="docling", max_concurrent_files=4)
+    ```
+  </Accordion>
+
+  <Accordion title="update_context_config(**context_kwargs)">
+    ```python
+    def update_context_config(**context_kwargs) -> None
+    ```
+
+    Update context extraction parameters and immediately propagate changes to all active modal processors. Accepts any field from `RAGAnythingConfig` that relates to context (`context_window`, `context_mode`, `max_context_tokens`, `include_headers`, `include_captions`, `context_filter_content_types`).
+  </Accordion>
+
+  <Accordion title="set_content_source_for_context(...)">
+    ```python
+    def set_content_source_for_context(
+        content_source,
+        content_format: str = "auto",
+    ) -> None
+    ```
+
+    Manually set the content source used by all modal processors when extracting surrounding context for a multimodal item.
+
+    <ParamField path="content_source" type="Any" required>
+      The full document content (e.g. the `content_list` from `parse_document`).
+    </ParamField>
+
+    <ParamField path="content_format" type="str" default='"auto"'>
+      Format hint: `"minerU"`, `"text_chunks"`, or `"auto"`.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="get_config_info()">
+    ```python
+    def get_config_info() -> Dict[str, Any]
+    ```
+
+    Returns a nested dictionary with the current configuration grouped by category (directory, parsing, multimodal_processing, context_extraction, batch_processing, lightrag_config).
+  </Accordion>
+
+  <Accordion title="get_processor_info()">
+    ```python
+    def get_processor_info() -> Dict[str, Any]
+    ```
+
+    Returns a dictionary containing parser installation status, model availability, and per-processor metadata (class name, enabled status).
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## RAGAnythingConfig
+
+See the full [configuration reference](/reference/configuration).
+
+---
+
+## Modal processors
+
+All processors inherit from `BaseModalProcessor` and share the same constructor signature and `process_multimodal_content` interface.
+
+```python
+from raganything.modalprocessors import (
+    ImageModalProcessor,
+    TableModalProcessor,
+    EquationModalProcessor,
+    GenericModalProcessor,
+)
+```
+
+<AccordionGroup>
+  <Accordion title="Constructor (all processors)">
+    ```python
+    ImageModalProcessor(
+        lightrag: LightRAG,
+        modal_caption_func: Callable,
+        context_extractor: ContextExtractor = None,
+    )
+    ```
+
+    The same signature applies to `TableModalProcessor`, `EquationModalProcessor`, and `GenericModalProcessor`.
+
+    <ParamField path="lightrag" type="LightRAG" required>
+      An initialised `LightRAG` instance. Storage handles are borrowed from it.
+    </ParamField>
+
+    <ParamField path="modal_caption_func" type="Callable" required>
+      LLM or VLM callable used to generate descriptions. For `ImageModalProcessor`, this should accept an `image_data` keyword argument with a base64-encoded image string.
+    </ParamField>
+
+    <ParamField path="context_extractor" type="ContextExtractor | None" default="None">
+      Custom `ContextExtractor` instance. When omitted, a default extractor is created using the tokenizer from the `LightRAG` instance.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="process_multimodal_content(...)">
+    ```python
+    async def process_multimodal_content(
+        self,
+        modal_content: Dict[str, Any],
+        content_type: str,
+        file_path: str = "manual_creation",
+        entity_name: str = None,
+        item_info: Dict[str, Any] = None,
+        batch_mode: bool = False,
+        doc_id: str = None,
+        chunk_order_index: int = 0,
+    ) -> Tuple[str, Dict[str, Any], List]
+    ```
+
+    Process a single multimodal item: generate a description, create a knowledge-graph entity, store a chunk, and extract entity–relation pairs.
+
+    <ParamField path="modal_content" type="Dict[str, Any]" required>
+      Content item dictionary. Schema varies by content type — see [content list format](/reference/content-formats).
+    </ParamField>
+
+    <ParamField path="content_type" type="str" required>
+      Type string: `"image"`, `"table"`, `"equation"`, or any custom type name.
+    </ParamField>
+
+    <ParamField path="file_path" type="str" default='"manual_creation"'>
+      Source file reference stored in entity metadata.
+    </ParamField>
+
+    <ParamField path="entity_name" type="str | None" default="None">
+      Override the entity name that the LLM would normally generate.
+    </ParamField>
+
+    <ParamField path="item_info" type="Dict[str, Any] | None" default="None">
+      Metadata used by `ContextExtractor` — typically `{"page_idx": int, "index": int, "type": str}`.
+    </ParamField>
+
+    <ResponseField name="return" type="Tuple[str, Dict, List]">
+      `(enhanced_caption, entity_info, chunk_results)` — the generated description, entity metadata dict, and raw chunk results for batch merging.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="generate_description_only(...)">
+    ```python
+    async def generate_description_only(
+        self,
+        modal_content: Any,
+        content_type: str,
+        item_info: Dict[str, Any] = None,
+        entity_name: str = None,
+    ) -> Tuple[str, Dict[str, Any]]
+    ```
+
+    Stage-1 helper used by the batch pipeline. Generates the LLM description and entity info without writing to storage.
+
+    <ResponseField name="return" type="Tuple[str, Dict]">
+      `(description, entity_info)`
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## ContextExtractor
+
+```python
+from raganything.modalprocessors import ContextExtractor, ContextConfig
+```
+
+<AccordionGroup>
+  <Accordion title="ContextExtractor(...)">
+    ```python
+    class ContextExtractor:
+        def __init__(
+            self,
+            config: ContextConfig = None,
+            tokenizer=None,
+        )
+    ```
+
+    <ParamField path="config" type="ContextConfig | None" default="None">
+      Context extraction settings. Defaults to `ContextConfig()` when omitted.
+    </ParamField>
+
+    <ParamField path="tokenizer" type="Any | None" default="None">
+      Tokenizer for accurate token counting and truncation. Falls back to character counting when absent.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="extract_context(...)">
+    ```python
+    def extract_context(
+        self,
+        content_source: Any,
+        current_item_info: Dict[str, Any],
+        content_format: str = "auto",
+    ) -> str
+    ```
+
+    Extract context text surrounding a given item from `content_source`.
+
+    <ParamField path="content_source" type="Any" required>
+      The full document content — a `content_list` (list of dicts), a list of text strings, a plain string, or a dict.
+    </ParamField>
+
+    <ParamField path="current_item_info" type="Dict[str, Any]" required>
+      Dictionary with at minimum `"page_idx"` (for page mode) or `"index"` (for chunk mode) keys.
+    </ParamField>
+
+    <ParamField path="content_format" type="str" default='"auto"'>
+      Format hint: `"minerU"`, `"text_chunks"`, `"text"`, or `"auto"`.
+    </ParamField>
+
+    <ResponseField name="return" type="str">
+      Extracted and token-truncated context string.
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## BatchParser
+
+```python
+from raganything.batch_parser import BatchParser, BatchProcessingResult
+```
+
+<AccordionGroup>
+  <Accordion title="BatchParser(...)">
+    ```python
+    class BatchParser:
+        def __init__(
+            self,
+            parser_type: str = "mineru",
+            max_workers: int = 4,
+            show_progress: bool = True,
+            timeout_per_file: int = 300,
+            skip_installation_check: bool = False,
+        )
+    ```
+
+    <ParamField path="parser_type" type="str" default='"mineru"'>
+      Parser backend: `"mineru"`, `"docling"`, or `"paddleocr"`.
+    </ParamField>
+
+    <ParamField path="max_workers" type="int" default="4">
+      Thread pool size for parallel file processing.
+    </ParamField>
+
+    <ParamField path="show_progress" type="bool" default="True">
+      Show a `tqdm` progress bar during batch processing.
+    </ParamField>
+
+    <ParamField path="timeout_per_file" type="int" default="300">
+      Per-file timeout in seconds.
+    </ParamField>
+
+    <ParamField path="skip_installation_check" type="bool" default="False">
+      Skip the parser installation check at construction time (useful for testing).
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="process_batch(...)">
+    ```python
+    def process_batch(
+        self,
+        file_paths: List[str],
+        output_dir: str,
+        parse_method: str = "auto",
+        recursive: bool = True,
+        dry_run: bool = False,
+        **kwargs,
+    ) -> BatchProcessingResult
+    ```
+
+    Process a list of file paths or directories in parallel using a thread pool.
+
+    <ParamField path="file_paths" type="List[str]" required>
+      File paths or directory paths to process.
+    </ParamField>
+
+    <ParamField path="output_dir" type="str" required>
+      Base output directory. Each file gets its own sub-directory named after the file stem.
+    </ParamField>
+
+    <ParamField path="dry_run" type="bool" default="False">
+      When `True`, discover and list eligible files without running the parser.
+    </ParamField>
+
+    <ResponseField name="return" type="BatchProcessingResult">
+      Dataclass with `successful_files`, `failed_files`, `total_files`, `processing_time`, `errors`, `output_dir`, and a `success_rate` property.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="process_batch_async(...)">
+    ```python
+    async def process_batch_async(
+        self,
+        file_paths: List[str],
+        output_dir: str,
+        parse_method: str = "auto",
+        recursive: bool = True,
+        dry_run: bool = False,
+        **kwargs,
+    ) -> BatchProcessingResult
+    ```
+
+    Async wrapper that runs `process_batch` in a thread-pool executor. Shares all parameters with `process_batch`.
+  </Accordion>
+
+  <Accordion title="filter_supported_files(...)">
+    ```python
+    def filter_supported_files(
+        self,
+        file_paths: List[str],
+        recursive: bool = True,
+    ) -> List[str]
+    ```
+
+    Walk the provided paths and return only files with extensions supported by the configured parser.
+
+    <ResponseField name="return" type="List[str]">
+      Filtered list of absolute file path strings.
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Utility functions
+
+These functions are exported from the top-level `raganything` package and are available when the optional modules are installed.
+
+<AccordionGroup>
+  <Accordion title="Parser registry">
+    ```python
+    from raganything import (
+        register_parser,
+        unregister_parser,
+        list_parsers,
+        get_supported_parsers,
+    )
+    ```
+
+    | Function | Signature | Description |
+    |----------|-----------|-------------|
+    | `register_parser` | `(name: str, parser_class)` | Register a custom parser class under a name. |
+    | `unregister_parser` | `(name: str)` | Remove a registered parser. |
+    | `list_parsers` | `() -> List[str]` | Return names of all registered parsers. |
+    | `get_supported_parsers` | `() -> Dict` | Return a dict mapping parser names to their classes. |
+  </Accordion>
+
+  <Accordion title="Prompt language management">
+    ```python
+    from raganything import (
+        set_prompt_language,
+        get_prompt_language,
+        reset_prompts,
+        register_prompt_language,
+        get_available_languages,
+    )
+    ```
+
+    | Function | Signature | Description |
+    |----------|-----------|-------------|
+    | `set_prompt_language` | `(language: str) -> None` | Switch the active prompt language process-wide (e.g. `"zh"` for Chinese). Missing keys fall back to English. |
+    | `get_prompt_language` | `() -> str` | Return the current language code. |
+    | `reset_prompts` | `() -> None` | Reset all prompts to English defaults. |
+    | `register_prompt_language` | `(language_code: str, prompts: Dict) -> None` | Register a custom prompt set for a new language. |
+    | `get_available_languages` | `() -> List[str]` | Return all registered (and lazily-loadable) language codes. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Callbacks
+
+```python
+from raganything import (
+    ProcessingCallback,
+    MetricsCallback,
+    CallbackManager,
+    ProcessingEvent,
+)
+```
+
+<AccordionGroup>
+  <Accordion title="ProcessingCallback (base class)">
+    Subclass and override any `on_*` method to hook into pipeline stages. All methods accept `**kwargs` for forward compatibility.
+
+    | Method | Trigger |
+    |--------|---------|
+    | `on_parse_start(file_path, parser, **kw)` | Before document parsing begins |
+    | `on_parse_complete(file_path, content_blocks, doc_id, duration_seconds, **kw)` | After successful parsing |
+    | `on_parse_error(file_path, error, **kw)` | When parsing fails |
+    | `on_text_insert_start(file_path, text_length, **kw)` | Before text insertion into LightRAG |
+    | `on_text_insert_complete(file_path, duration_seconds, **kw)` | After text insertion succeeds |
+    | `on_multimodal_start(file_path, item_count, **kw)` | Before multimodal processing begins |
+    | `on_multimodal_item_complete(file_path, item_index, item_type, total_items, **kw)` | After each multimodal item |
+    | `on_multimodal_complete(file_path, processed_count, duration_seconds, **kw)` | After all multimodal items |
+    | `on_query_start(query, mode, **kw)` | Before query execution |
+    | `on_query_complete(query, mode, duration_seconds, result_length, **kw)` | After query completes |
+    | `on_query_error(query, mode, error, **kw)` | When a query fails |
+    | `on_document_complete(file_path, doc_id, duration_seconds, **kw)` | When full pipeline finishes |
+    | `on_document_error(file_path, error, stage, **kw)` | When pipeline fails at any stage |
+    | `on_batch_start(file_count, **kw)` | When batch processing begins |
+    | `on_batch_complete(total_files, successful, failed, duration_seconds, **kw)` | When batch processing finishes |
+
+    ```python
+    class MyCallback(ProcessingCallback):
+        def on_parse_complete(self, file_path, content_blocks=0, **kw):
+            print(f"Parsed {content_blocks} blocks from {file_path}")
+
+    rag.callback_manager.register(MyCallback())
+    ```
+  </Accordion>
+
+  <Accordion title="MetricsCallback">
+    Built-in callback that accumulates processing statistics. Access via the `metrics` dict or `summary()`.
+
+    ```python
+    from raganything import MetricsCallback
+
+    cb = MetricsCallback()
+    rag.callback_manager.register(cb)
+
+    # After processing:
+    print(cb.summary())
+    # RAGAnything Processing Metrics
+    # ========================================
+    # Documents processed : 5
+    # Documents failed    : 0
+    # Content blocks      : 312
+    # ...
+
+    cb.reset()  # Clear all counters
+    ```
+  </Accordion>
+
+  <Accordion title="CallbackManager">
+    Thread-safe dispatcher owned by every `RAGAnything` instance as `rag.callback_manager`.
+
+    | Method | Description |
+    |--------|-------------|
+    | `register(callback)` | Add a `ProcessingCallback` instance |
+    | `unregister(callback)` | Remove a registered callback |
+    | `dispatch(event_name, **kwargs)` | Fire an event (used internally by RAGAnything) |
+    | `enable_event_log(enabled)` | Start/stop recording `ProcessingEvent` objects |
+    | `event_log` | Read-only list of recorded `ProcessingEvent` objects |
+    | `clear_event_log()` | Clear the event log |
+  </Accordion>
+
+  <Accordion title="ProcessingEvent">
+    Immutable record of a pipeline event with fields: `event_type`, `timestamp`, `file_path`, `doc_id`, `stage`, `details`, `duration_seconds`, `error`. Call `.to_dict()` to serialise.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Resilience utilities
+
+```python
+from raganything import retry, async_retry, CircuitBreaker
+```
+
+<AccordionGroup>
+  <Accordion title="@retry(...)">
+    ```python
+    def retry(
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        exponential_base: float = 2.0,
+        jitter: bool = True,
+        retryable_exceptions: Optional[Sequence[Type[BaseException]]] = None,
+        on_retry: Optional[Callable[[BaseException, int, float], None]] = None,
+    ) -> Callable
+    ```
+
+    Decorator for synchronous functions. Uses exponential back-off with jitter.
+
+    ```python
+    from raganything import retry
+
+    @retry(max_attempts=5, base_delay=2.0)
+    def call_external_api():
+        ...
+    ```
+
+    <ParamField path="max_attempts" type="int" default="3">
+      Total attempts including the first call.
+    </ParamField>
+    <ParamField path="base_delay" type="float" default="1.0">
+      Initial sleep duration in seconds.
+    </ParamField>
+    <ParamField path="max_delay" type="float" default="60.0">
+      Maximum sleep duration in seconds.
+    </ParamField>
+    <ParamField path="retryable_exceptions" type="Sequence[Type[BaseException]] | None" default="None">
+      Defaults to common network and API transient errors (`ConnectionError`, `TimeoutError`, `httpx` errors, `openai` errors when installed).
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="@async_retry(...)">
+    ```python
+    def async_retry(
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        exponential_base: float = 2.0,
+        jitter: bool = True,
+        retryable_exceptions: Optional[Sequence[Type[BaseException]]] = None,
+        on_retry: Optional[Callable] = None,
+    ) -> Callable
+    ```
+
+    Async counterpart of `@retry`. Uses `asyncio.sleep` so it does not block the event loop.
+
+    ```python
+    from raganything import async_retry
+
+    @async_retry(max_attempts=5, base_delay=2.0)
+    async def call_llm_async(prompt: str) -> str:
+        ...
+    ```
+  </Accordion>
+
+  <Accordion title="CircuitBreaker">
+    ```python
+    class CircuitBreaker:
+        def __init__(
+            self,
+            failure_threshold: int = 5,
+            reset_timeout: float = 60.0,
+            name: str = "default",
+            failure_exceptions: Optional[Sequence[Type[BaseException]]] = None,
+        )
+    ```
+
+    Prevents cascading failures. Opens after `failure_threshold` consecutive failures; enters half-open state after `reset_timeout` seconds.
+
+    ```python
+    from raganything import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=3, reset_timeout=30.0, name="llm")
+
+    @breaker          # sync function
+    def call_llm(prompt):
+        ...
+
+    @breaker.async_call   # async function
+    async def call_llm_async(prompt):
+        ...
+    ```
+
+    | Property / Method | Description |
+    |-------------------|-------------|
+    | `state` | Current state: `"closed"`, `"open"`, or `"half-open"` |
+    | `record_success()` | Manually record a success and reset the breaker |
+    | `record_failure()` | Manually record a failure, potentially opening the breaker |
+    | `CircuitBreakerOpen` | Exception raised when the circuit is open |
+  </Accordion>
+</AccordionGroup>

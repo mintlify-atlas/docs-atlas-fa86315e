@@ -1,0 +1,324 @@
+---
+title: "How the multimodal processing pipeline works"
+description: "A deep dive into how RAG-Anything routes, analyses, and indexes images, tables, equations, and custom content types across the pipeline."
+---
+
+When RAG-Anything receives a document, it does not treat every element as plain text. Instead it identifies each content block's modality, routes it to a specialised processor, has that processor produce a rich text description via an LLM or vision model, and then stores both the description and the entity relationships in LightRAG's knowledge graph. This page walks through each processor, the context mechanism that feeds surrounding document information to them, and the concurrent execution model that keeps throughput high.
+
+## The content_list format
+
+Every document, whether parsed by MinerU or supplied directly via `insert_content_list`, is represented as an ordered list of typed dictionaries. This is the contract between the parsing layer and the processing layer.
+
+<Tabs>
+  <Tab title="Text">
+    ```python
+    {
+        "type": "text",
+        "text": "This is the introduction section of our research paper.",
+        "page_idx": 0
+    }
+    ```
+  </Tab>
+  <Tab title="Image">
+    ```python
+    {
+        "type": "image",
+        "img_path": "/absolute/path/to/figure1.jpg",  # IMPORTANT: must be absolute
+        "image_caption": ["Figure 1: System Architecture"],
+        "image_footnote": ["Source: Authors' original design"],
+        "page_idx": 1
+    }
+    ```
+  </Tab>
+  <Tab title="Table">
+    ```python
+    {
+        "type": "table",
+        "table_body": "| Method | Accuracy | F1-Score |\n|--------|----------|----------|\n| Ours | 95.2% | 0.94 |\n| Baseline | 87.3% | 0.85 |",
+        "table_caption": ["Table 1: Performance Comparison"],
+        "table_footnote": ["Results on test dataset"],
+        "page_idx": 2
+    }
+    ```
+  </Tab>
+  <Tab title="Equation">
+    ```python
+    {
+        "type": "equation",
+        "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+        "text": "Document relevance probability formula",
+        "page_idx": 3
+    }
+    ```
+  </Tab>
+  <Tab title="Generic">
+    ```python
+    {
+        "type": "custom_type",
+        "content": "any serialisable content",
+        "page_idx": 4
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `img_path` must be an absolute path. The processor encodes the image to base64 at processing time, and the VLM-enhanced query path loads it again at retrieval time. Relative paths will cause `FileNotFoundError` in both cases.
+</Note>
+
+## ContextExtractor — providing document context
+
+Before any modal processor calls its LLM, `ContextExtractor` assembles the surrounding text from the same document. This context window gives the model the vocabulary and domain knowledge needed to produce accurate descriptions and entity names.
+
+`ContextExtractor` is initialised with a `ContextConfig` and a reference to LightRAG's tokenizer for accurate token budgeting:
+
+```python
+@dataclass
+class ContextConfig:
+    context_window: int = 1        # pages / chunks on each side
+    context_mode: str = "page"     # "page" or "chunk"
+    max_context_tokens: int = 2000
+    include_headers: bool = True
+    include_captions: bool = True
+    filter_content_types: List[str] = None  # defaults to ["text"]
+```
+
+In **page mode** (the default), the extractor scans the `content_list` and collects text items whose `page_idx` falls within `[current_page - window, current_page + window]`. Items from adjacent pages are prefixed with `[Page N]` so the model knows where they come from. The assembled context is then truncated to `max_context_tokens` at a sentence boundary using the same tokenizer LightRAG uses for chunking.
+
+```python
+# raganything/raganything.py — _initialize_processors()
+self.context_extractor = self._create_context_extractor()
+
+self.modal_processors["image"] = ImageModalProcessor(
+    lightrag=self.lightrag,
+    modal_caption_func=self.vision_model_func or self.llm_model_func,
+    context_extractor=self.context_extractor,
+)
+self.modal_processors["table"] = TableModalProcessor(
+    lightrag=self.lightrag,
+    modal_caption_func=self.llm_model_func,
+    context_extractor=self.context_extractor,
+)
+self.modal_processors["equation"] = EquationModalProcessor(
+    lightrag=self.lightrag,
+    modal_caption_func=self.llm_model_func,
+    context_extractor=self.context_extractor,
+)
+# GenericModalProcessor always registered as the fallback
+self.modal_processors["generic"] = GenericModalProcessor(
+    lightrag=self.lightrag,
+    modal_caption_func=self.llm_model_func,
+    context_extractor=self.context_extractor,
+)
+```
+
+## Modal processors in detail
+
+All processors inherit from `BaseModalProcessor` and implement two methods: `generate_description_only` (Stage 1 — concurrent) and `process_multimodal_content` (wraps Stage 1 and calls `_create_entity_and_chunk`). The split allows batch processing to generate all descriptions concurrently before the sequential entity-merge step.
+
+<AccordionGroup>
+  <Accordion title="ImageModalProcessor">
+    **Purpose:** Produce a semantically rich caption for an image and extract visual entities.
+
+    **How it works:**
+    1. Validates and resolves the `img_path`.
+    2. Calls `ContextExtractor` to obtain surrounding text.
+    3. Encodes the image file to base64.
+    4. Sends the base64 payload plus context to the **vision LLM** (`vision_model_func` when available, otherwise `llm_model_func`).
+    5. Parses the JSON response — expected fields are `detailed_description` and `entity_info` (`entity_name`, `entity_type`, `summary`).
+    6. Falls back through three progressively looser JSON parsing strategies, and ultimately to regex field extraction, before using a plain-text fallback.
+
+    ```python
+    # Instantiated automatically during _initialize_processors()
+    self.modal_processors["image"] = ImageModalProcessor(
+        lightrag=self.lightrag,
+        modal_caption_func=self.vision_model_func or self.llm_model_func,
+        context_extractor=self.context_extractor,
+    )
+    ```
+
+    **Or construct directly for standalone use:**
+    ```python
+    from raganything.modalprocessors import ImageModalProcessor
+
+    image_processor = ImageModalProcessor(
+        lightrag=rag,
+        modal_caption_func=vision_model_func,
+    )
+
+    image_content = {
+        "img_path": "path/to/image.jpg",
+        "image_caption": ["Figure 1: Experimental results"],
+        "image_footnote": ["Data collected in 2024"]
+    }
+
+    description, entity_info = await image_processor.process_multimodal_content(
+        modal_content=image_content,
+        content_type="image",
+        file_path="research_paper.pdf",
+        entity_name="Experimental Results Figure"
+    )
+    ```
+
+    **Vision model call signature** — the processor passes `image_data` (base64 string) as a keyword argument, which your `vision_model_func` must handle:
+
+    ```python
+    def vision_model_func(
+        prompt, system_prompt=None, history_messages=[], image_data=None, messages=None, **kwargs
+    ):
+        if image_data:
+            # Build OpenAI image_url content block from base64
+            ...
+    ```
+  </Accordion>
+
+  <Accordion title="TableModalProcessor">
+    **Purpose:** Interpret tabular data semantically — extract trends, cross-column relationships, and a meaningful entity name.
+
+    **How it works:**
+    1. Parses the content dict for `table_body`, `table_caption`, and `table_footnote`.
+    2. Calls `ContextExtractor` to surface surrounding text.
+    3. Sends a structured table-analysis prompt to the **text LLM** (`llm_model_func`).
+    4. Expects `detailed_description` and `entity_info` in the JSON response.
+
+    ```python
+    from raganything.modalprocessors import TableModalProcessor
+
+    table_processor = TableModalProcessor(
+        lightrag=rag,
+        modal_caption_func=llm_model_func,
+    )
+
+    table_content = {
+        "table_body": """
+        | Method | Accuracy | F1-Score |
+        |--------|----------|----------|
+        | RAGAnything | 95.2% | 0.94 |
+        | Baseline | 87.3% | 0.85 |
+        """,
+        "table_caption": ["Performance Comparison"],
+        "table_footnote": ["Results on test dataset"]
+    }
+
+    description, entity_info = await table_processor.process_multimodal_content(
+        modal_content=table_content,
+        content_type="table",
+        file_path="research_paper.pdf",
+        entity_name="Performance Results Table"
+    )
+    ```
+
+    The processor identifies:
+    - Statistical patterns and value distributions within columns.
+    - Semantic dependencies between multiple datasets when tables share rows or headers.
+    - A concise entity name that will become the graph node for the table.
+  </Accordion>
+
+  <Accordion title="EquationModalProcessor">
+    **Purpose:** Parse mathematical expressions, explain their components, and anchor them to domain concepts.
+
+    **How it works:**
+    1. Extracts `text` (equation source) and `text_format` from the content dict.
+    2. Optionally enriches the prompt with `ContextExtractor` output.
+    3. Sends an equation-analysis prompt to the text LLM.
+    4. Maps the parsed formula to domain-specific knowledge mentioned in surrounding text.
+
+    ```python
+    # Equation content item from the content_list
+    equation_content = {
+        "type": "equation",
+        "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+        "text": "Document relevance probability formula",
+        "page_idx": 3
+    }
+    ```
+
+    At query time the same processor is used to describe equations submitted as part of a multimodal query:
+
+    ```python
+    result = await rag.aquery_with_multimodal(
+        "Explain this formula and its relevance to the document content",
+        multimodal_content=[{
+            "type": "equation",
+            "latex": "P(d|q) = \\frac{P(q|d) \\cdot P(d)}{P(q)}",
+            "equation_caption": "Document relevance probability"
+        }],
+        mode="hybrid"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="GenericModalProcessor">
+    **Purpose:** Extensible fallback for any content type that does not have a dedicated processor.
+
+    **How it works:** Converts the entire content dict to a string and sends it to the text LLM with a generic analysis prompt. Subclass it to add custom handling:
+
+    ```python
+    from raganything.modalprocessors import GenericModalProcessor
+
+    class CustomModalProcessor(GenericModalProcessor):
+        async def process_multimodal_content(
+            self, modal_content, content_type, file_path, entity_name
+        ):
+            # Your custom processing logic
+            enhanced_description = await self.analyze_custom_content(modal_content)
+            entity_info = self.create_custom_entity(enhanced_description, entity_name)
+            return await self._create_entity_and_chunk(
+                enhanced_description, entity_info, file_path
+            )
+    ```
+
+    The generic processor is always registered regardless of the `enable_*` flags, so custom types never fall through unhandled.
+  </Accordion>
+</AccordionGroup>
+
+## Concurrent pipeline execution
+
+Batch processing happens in a type-aware, two-stage pattern inside `_process_multimodal_content_batch_type_aware`:
+
+**Stage 1 — concurrent description generation**
+
+All multimodal items are dispatched concurrently. Each task:
+1. Looks up the correct processor for the item's `type`.
+2. Calls `generate_description_only` — this is the expensive LLM call.
+3. Returns a result dict containing `description`, `entity_info`, and the original item.
+
+Concurrency is bounded by LightRAG's `max_parallel_insert` semaphore:
+
+```python
+semaphore = asyncio.Semaphore(getattr(self.lightrag, "max_parallel_insert", 2))
+
+tasks = [
+    asyncio.create_task(
+        process_single_item_with_correct_processor(item, i, file_path)
+    )
+    for i, item in enumerate(multimodal_items)
+]
+results = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+**Stages 2–6 — sequential graph insertion**
+
+Once all descriptions exist, the pipeline converts them to LightRAG chunk format, stores them in the vector and graph stores, runs entity relation extraction, adds `belongs_to` edges, and merges everything into the graph using LightRAG's standard `merge_nodes_and_edges` function. This sequential phase avoids write-write conflicts in the graph store.
+
+<Tip>
+  If concurrent description generation fails for any item, the pipeline falls back gracefully to `_process_multimodal_content_individual`, which processes items one by one and still produces correct graph entries.
+</Tip>
+
+## Processor initialisation flags
+
+You can disable specific modalities when the corresponding LLM capability or content type is not needed:
+
+```python
+config = RAGAnythingConfig(
+    enable_image_processing=True,    # requires vision_model_func for best results
+    enable_table_processing=True,
+    enable_equation_processing=True,
+)
+```
+
+When a modality is disabled, its processor is simply not added to `modal_processors`. Items of that type encountered during processing are handled by `GenericModalProcessor` instead.
+
+<Warning>
+  Disabling `enable_image_processing` does not prevent images from being indexed — it routes them through `GenericModalProcessor`, which produces lower-quality descriptions because it cannot see the image content. Disable it only if you have no vision LLM available and image quality is not important.
+</Warning>

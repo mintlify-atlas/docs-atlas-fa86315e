@@ -1,0 +1,223 @@
+---
+title: "Context-aware multimodal processing in RAG-Anything"
+description: "Improve image, table, and equation understanding by automatically supplying surrounding document text as context during multimodal processing."
+---
+
+When RAG-Anything analyzes an image, table, or equation, it can optionally supply the LLM with text from the surrounding pages or content chunks. This surrounding context helps the model understand the element's purpose — for example, knowing that a chart appears in a section titled "Experimental Results" produces a more accurate and grounded description than analyzing the chart in isolation.
+
+## How context extraction works
+
+During document processing, RAG-Anything builds a `ContextExtractor` from your `RAGAnythingConfig` settings. For each multimodal element, the extractor:
+
+1. Identifies the element's position in the document (via `page_idx` or list index).
+2. Collects text from the surrounding window of pages or chunks.
+3. Filters the collected text to include only the configured content types.
+4. Truncates the result to fit within `max_context_tokens`.
+5. Passes the context string to the modal processor alongside the element itself.
+
+The modal processor then includes the context in its LLM prompt, enabling descriptions that reference document-level terminology and structure.
+
+## Configure context via `RAGAnythingConfig`
+
+All context parameters are set in `RAGAnythingConfig` and apply to every modal processor.
+
+```python
+from raganything import RAGAnything, RAGAnythingConfig
+
+config = RAGAnythingConfig(
+    context_window=2,                              # pages/chunks before and after
+    context_mode="page",                           # "page" | "chunk"
+    max_context_tokens=3000,                       # token budget for context
+    include_headers=True,                          # include section headings
+    include_captions=True,                         # include figure/table captions
+    context_filter_content_types=["text", "image"],# content types to collect
+    content_format="minerU",                       # "minerU" | "text_chunks" | "text" | "auto"
+)
+
+rag = RAGAnything(
+    config=config,
+    llm_model_func=your_llm_function,
+    embedding_func=your_embedding_function,
+)
+```
+
+Context extraction is automatically enabled when you call `process_document_complete()`. No additional steps are required.
+
+## Configuration parameters
+
+<ParamField path="context_window" type="int" default="1">
+  Number of pages (in `page` mode) or content items (in `chunk` mode) to include on each side of the current element. A value of `1` includes the adjacent page before and after; a value of `2` includes two pages on each side.
+</ParamField>
+
+<ParamField path="context_mode" type="string" default="page">
+  Controls how boundaries are calculated:
+  - `page` — groups content by `page_idx` and uses the page window
+  - `chunk` — uses sequential position in the content list
+</ParamField>
+
+<ParamField path="max_context_tokens" type="int" default="2000">
+  Maximum number of tokens to include in the context string. RAG-Anything uses LightRAG's tokenizer for accurate counting and truncates at sentence or paragraph boundaries where possible.
+</ParamField>
+
+<ParamField path="include_headers" type="boolean" default="true">
+  When `True`, content items with a `text_level` field (section headings) are included and formatted with Markdown-style `#` prefixes (e.g., `# Level 1`, `## Level 2`).
+</ParamField>
+
+<ParamField path="include_captions" type="boolean" default="true">
+  When `True`, captions from nearby images and tables are included in the context as `[Image: caption text]` or `[Table: caption text]`.
+</ParamField>
+
+<ParamField path="context_filter_content_types" type="array" default='["text"]'>
+  List of content types to include when collecting context. Common values: `"text"`, `"image"`, `"table"`. Narrowing this list reduces noise; broadening it captures richer context at the cost of token budget.
+</ParamField>
+
+<ParamField path="content_format" type="string" default="minerU">
+  Hint to the context extractor about how to interpret the content source:
+  - `minerU` — structured list of dicts with `type`, `page_idx`, and content fields (default for documents parsed by MinerU)
+  - `text_chunks` — flat list of plain strings
+  - `text` — a single string containing the full document
+  - `auto` — auto-detect based on the type of the content source
+</ParamField>
+
+## Update context config at runtime
+
+Use `update_context_config()` to change context settings after initialization without recreating the `RAGAnything` instance.
+
+```python
+rag.update_context_config(
+    context_window=1,
+    max_context_tokens=1500,
+    include_captions=False,
+)
+```
+
+## Set a custom content source
+
+By default, `process_document_complete()` sets the content source automatically. If you are using `insert_content_list()` or processing content manually, call `set_content_source_for_context()` before processing multimodal items.
+
+```python
+# Set a MinerU-format content list as the context source
+rag.set_content_source_for_context(content_list, "minerU")
+
+# Or use a plain text source
+rag.set_content_source_for_context(full_document_text, "text")
+```
+
+## Direct `ContextExtractor` usage
+
+For fine-grained control — for example when implementing a custom modal processor — you can instantiate `ContextExtractor` directly.
+
+```python
+from raganything.modalprocessors import (
+    ContextExtractor,
+    ContextConfig,
+    ImageModalProcessor,
+)
+
+context_config = ContextConfig(
+    context_window=1,
+    context_mode="page",
+    max_context_tokens=2000,
+    include_headers=True,
+    include_captions=True,
+    filter_content_types=["text"],
+)
+
+context_extractor = ContextExtractor(context_config)
+
+processor = ImageModalProcessor(
+    lightrag=lightrag_instance,
+    modal_caption_func=your_caption_func,
+    context_extractor=context_extractor,
+)
+
+# Provide the full document content list as the context source
+processor.set_content_source(content_list, "minerU")
+
+# item_info tells the extractor where this element sits in the document
+item_info = {
+    "page_idx": 2,
+    "index": 5,
+    "type": "image",
+}
+
+result = await processor.process_multimodal_content(
+    modal_content=image_data,
+    content_type="image",
+    file_path="document.pdf",
+    entity_name="Architecture Diagram",
+    item_info=item_info,
+)
+```
+
+## Context mode examples
+
+### Page-based (default)
+
+Context is collected from `page_idx` neighbors. Use this for documents where content is organized into discrete pages.
+
+```python
+# Narrow context: only the adjacent page on each side
+config = RAGAnythingConfig(
+    context_window=1,
+    context_mode="page",
+    max_context_tokens=1000,
+    include_headers=True,
+    include_captions=False,
+    context_filter_content_types=["text"],
+)
+```
+
+```python
+# Wide context: two pages on each side, including captions
+config = RAGAnythingConfig(
+    context_window=2,
+    context_mode="page",
+    max_context_tokens=3000,
+    include_headers=True,
+    include_captions=True,
+    context_filter_content_types=["text", "image", "table"],
+)
+```
+
+### Chunk-based
+
+Context is collected by sequential position in the content list. Use this for content that doesn't have meaningful page boundaries (e.g., web scrapes or plain-text documents).
+
+```python
+# Chunk-based with a window of 5 items on each side
+config = RAGAnythingConfig(
+    context_window=5,
+    context_mode="chunk",
+    max_context_tokens=2000,
+    include_headers=False,
+    include_captions=False,
+    context_filter_content_types=["text"],
+)
+```
+
+## Token management and boundary preservation
+
+When the collected context exceeds `max_context_tokens`, the extractor:
+
+1. Uses the LightRAG tokenizer to count tokens accurately.
+2. Truncates the context to the token limit.
+3. Attempts to end at a sentence boundary (`.`) if one falls within the last 20% of the truncated text.
+4. Falls back to a paragraph boundary (`\n`) if no sentence boundary is found.
+5. Appends `...` if neither boundary is found.
+
+When no tokenizer is available, the extractor falls back to character-based truncation using the same boundary-finding logic.
+
+## Environment variables
+
+All configuration parameters can be set via environment variables, which is useful for Docker deployments or CI pipelines.
+
+```bash
+CONTEXT_WINDOW=2
+CONTEXT_MODE=page
+MAX_CONTEXT_TOKENS=3000
+INCLUDE_HEADERS=true
+INCLUDE_CAPTIONS=true
+CONTEXT_FILTER_CONTENT_TYPES=text,image
+CONTENT_FORMAT=minerU
+```

@@ -1,0 +1,374 @@
+---
+title: "Use vLLM as the inference backend for RAG-Anything"
+description: "Use vLLM's OpenAI-compatible API as a high-throughput, production-grade LLM and embedding backend for scalable RAG-Anything deployments."
+---
+
+vLLM is a high-throughput, memory-efficient inference engine for large language models. Because it exposes an OpenAI-compatible REST API, RAG-Anything can point directly at a running vLLM server with no code changes — just environment variable configuration. vLLM is the recommended backend when you need to serve multiple concurrent users, run large models across several GPUs, or maximize inference throughput in a production environment.
+
+## Why vLLM?
+
+| Feature | vLLM | Ollama | LM Studio |
+|---|---|---|---|
+| Continuous batching | Yes | No | No |
+| PagedAttention | Yes | No | No |
+| Tensor parallelism | Yes | No | No |
+| Production throughput | High | Moderate | Low |
+| Quantization (AWQ / GPTQ / FP8) | Yes | Yes (GGUF) | Yes (GGUF) |
+| Multi-GPU support | Yes (native) | Limited | No |
+| Ease of setup | Moderate | Easy | Easy |
+| GUI | No | No | Yes |
+
+Choose vLLM when you need production-grade throughput, serve multiple concurrent users, or run large models across multiple GPUs.
+
+## Prerequisites
+
+<Steps>
+  <Step title="GPU hardware">
+    One or more NVIDIA GPUs with CUDA support (compute capability ≥ 7.0).
+  </Step>
+  <Step title="Install vLLM">
+    ```bash
+    pip install vllm
+    ```
+  </Step>
+  <Step title="Install RAG-Anything">
+    ```bash
+    pip install raganything
+    ```
+  </Step>
+</Steps>
+
+## Starting vLLM servers
+
+You need two vLLM processes: one for chat/completion and one for embeddings. Run them on separate ports.
+
+### Chat model
+
+```bash
+vllm serve Qwen/Qwen2.5-72B-Instruct \
+    --tensor-parallel-size 4 \
+    --max-model-len 32768 \
+    --port 8000
+```
+
+### Embedding model
+
+```bash
+vllm serve BAAI/bge-m3 \
+    --task embedding \
+    --port 8001
+```
+
+<Tip>
+  Large models can take several minutes to load. Wait until you see `Application startup complete` in the vLLM logs before sending requests.
+</Tip>
+
+Verify both servers are ready:
+
+```bash
+curl http://localhost:8000/v1/models
+curl http://localhost:8001/v1/models
+```
+
+## Configuration
+
+### Environment variables
+
+Add these to your `.env` file:
+
+```bash
+### vLLM — chat / completion
+LLM_BINDING=vllm
+LLM_MODEL=Qwen/Qwen2.5-72B-Instruct
+LLM_BINDING_HOST=http://localhost:8000/v1
+LLM_BINDING_API_KEY=token-abc123
+
+### vLLM — embeddings
+EMBEDDING_BINDING=vllm
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+EMBEDDING_BINDING_API_KEY=token-abc123
+```
+
+### Variable reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_BINDING` | — | Set to `vllm` |
+| `LLM_MODEL` | `Qwen/Qwen2.5-72B-Instruct` | Must match the model name vLLM is serving exactly |
+| `LLM_BINDING_HOST` | `http://localhost:8000/v1` | vLLM API base URL |
+| `LLM_BINDING_API_KEY` | `token-abc123` | vLLM accepts any non-empty string as the API key by default |
+| `EMBEDDING_BINDING` | — | Set to `vllm` |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model name served by the embedding vLLM instance |
+| `EMBEDDING_DIM` | `1024` | Output embedding dimensions |
+| `EMBEDDING_BINDING_HOST` | `http://localhost:8001/v1` | Embedding endpoint URL |
+| `EMBEDDING_BINDING_API_KEY` | `token-abc123` | Embedding API key |
+
+## Full integration example
+
+The following shows RAG-Anything configured to use a vLLM backend with the standard OpenAI-compatible API:
+
+```python
+import asyncio
+from raganything import RAGAnything, RAGAnythingConfig
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.utils import EmbeddingFunc
+
+async def main():
+    # vLLM server addresses
+    llm_base_url = "http://localhost:8000/v1"
+    embed_base_url = "http://localhost:8001/v1"
+    api_key = "token-abc123"  # vLLM accepts any non-empty string
+
+    config = RAGAnythingConfig(
+        working_dir="./rag_storage",
+        parser="mineru",
+        enable_image_processing=True,
+        enable_table_processing=True,
+        enable_equation_processing=True,
+    )
+
+    def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+        return openai_complete_if_cache(
+            "Qwen/Qwen2.5-72B-Instruct",
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=api_key,
+            base_url=llm_base_url,
+            **kwargs,
+        )
+
+    embedding_func = EmbeddingFunc(
+        embedding_dim=1024,
+        max_token_size=8192,
+        func=lambda texts: openai_embed.func(
+            texts,
+            model="BAAI/bge-m3",
+            api_key=api_key,
+            base_url=embed_base_url,
+        ),
+    )
+
+    rag = RAGAnything(
+        config=config,
+        llm_model_func=llm_model_func,
+        embedding_func=embedding_func,
+    )
+
+    await rag.process_document_complete(
+        file_path="research_paper.pdf",
+        output_dir="./output",
+    )
+
+    result = await rag.aquery(
+        "What are the main findings in this paper?",
+        mode="hybrid",
+    )
+    print(result)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Model configurations
+
+<AccordionGroup>
+  <Accordion title="Qwen 2.5 (recommended for RAG)">
+    ```bash
+    vllm serve Qwen/Qwen2.5-72B-Instruct \
+        --tensor-parallel-size 4 \
+        --max-model-len 32768
+    ```
+  </Accordion>
+
+  <Accordion title="Mistral / Mixtral">
+    ```bash
+    vllm serve mistralai/Mixtral-8x7B-Instruct-v0.1 \
+        --tensor-parallel-size 2 \
+        --max-model-len 32768
+    ```
+  </Accordion>
+
+  <Accordion title="Llama 3.1 70B">
+    ```bash
+    vllm serve meta-llama/Llama-3.1-70B-Instruct \
+        --tensor-parallel-size 4 \
+        --max-model-len 8192
+    ```
+  </Accordion>
+
+  <Accordion title="AWQ quantization (reduced memory)">
+    ```bash
+    vllm serve Qwen/Qwen2.5-72B-Instruct-AWQ \
+        --tensor-parallel-size 2 \
+        --quantization awq \
+        --max-model-len 32768
+    ```
+  </Accordion>
+
+  <Accordion title="GPTQ quantization">
+    ```bash
+    vllm serve TheBloke/Mixtral-8x7B-Instruct-v0.1-GPTQ \
+        --tensor-parallel-size 2 \
+        --quantization gptq
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Embedding options
+
+You are not required to use vLLM for both the LLM and the embedding model. You can mix backends:
+
+<Tabs>
+  <Tab title="vLLM embeddings (recommended)">
+    Run a dedicated vLLM instance for embeddings on a separate port:
+
+    ```bash
+    vllm serve BAAI/bge-m3 --task embedding --port 8001
+    ```
+
+    ```bash
+    EMBEDDING_BINDING=vllm
+    EMBEDDING_MODEL=BAAI/bge-m3
+    EMBEDDING_DIM=1024
+    EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+    EMBEDDING_BINDING_API_KEY=token-abc123
+    ```
+  </Tab>
+
+  <Tab title="Ollama embeddings">
+    If you already run Ollama, you can use it for embeddings while vLLM handles chat:
+
+    ```bash
+    EMBEDDING_BINDING=ollama
+    EMBEDDING_MODEL=bge-m3:latest
+    EMBEDDING_BINDING_HOST=http://localhost:11434
+    ```
+  </Tab>
+
+  <Tab title="OpenAI embeddings">
+    Use OpenAI's embedding API alongside vLLM for the chat model:
+
+    ```bash
+    EMBEDDING_BINDING=openai
+    EMBEDDING_MODEL=text-embedding-3-large
+    EMBEDDING_DIM=3072
+    EMBEDDING_BINDING_HOST=https://api.openai.com/v1
+    EMBEDDING_BINDING_API_KEY=sk-...
+    ```
+  </Tab>
+</Tabs>
+
+## Performance tuning
+
+### Tensor parallelism
+
+Distribute large models across GPUs by setting `--tensor-parallel-size` to the number of GPUs available:
+
+```bash
+# 4× A100 80 GB can serve 72B models at full precision
+vllm serve Qwen/Qwen2.5-72B-Instruct --tensor-parallel-size 4
+```
+
+### GPU memory utilization
+
+Increase the fraction of GPU memory vLLM reserves (default `0.9`). Only raise this if you have headroom:
+
+```bash
+vllm serve ... --gpu-memory-utilization 0.95
+```
+
+### Context length
+
+RAG chunks are typically under 4 K tokens. Reducing `--max-model-len` saves GPU memory:
+
+```bash
+# 8192 is often sufficient for RAG workloads
+vllm serve ... --max-model-len 8192
+```
+
+### Concurrency
+
+vLLM handles batching automatically through continuous batching and PagedAttention. On the RAG-Anything side, increase `MAX_ASYNC` in your `.env` to take advantage of this:
+
+```bash
+MAX_ASYNC=16  # vLLM handles concurrent requests efficiently
+```
+
+### Speculative decoding (vLLM ≥ 0.4)
+
+Use a small draft model to speed up generation:
+
+```bash
+vllm serve Qwen/Qwen2.5-72B-Instruct \
+    --speculative-model Qwen/Qwen2.5-0.5B-Instruct \
+    --num-speculative-tokens 5 \
+    --tensor-parallel-size 4
+```
+
+## Architecture overview
+
+```
+┌──────────────────────┐
+│   RAG-Anything       │
+│  (Document Processing│
+│   + Query Engine)    │
+└──────┬───────────────┘
+       │ OpenAI-compatible API
+       ▼
+┌──────────────────────┐     ┌──────────────────────┐
+│  vLLM Chat Server    │     │  vLLM Embedding Server│
+│  :8000/v1            │     │  :8001/v1             │
+│  (Qwen-72B, etc.)    │     │  (bge-m3, etc.)       │
+└──────────────────────┘     └──────────────────────┘
+       │                            │
+       ▼                            ▼
+┌──────────────────────────────────────────────┐
+│              GPU Cluster                      │
+│   PagedAttention · Continuous Batching        │
+│   Tensor Parallelism · Quantization           │
+└──────────────────────────────────────────────┘
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Connection refused">
+    ```
+    Connection failed: Connection refused
+    ```
+
+    - Verify vLLM is running: `curl http://localhost:8000/v1/models`
+    - Check that the port in `LLM_BINDING_HOST` matches the `--port` you used with `vllm serve`
+    - Wait for model loading to complete — large models can take several minutes
+  </Accordion>
+
+  <Accordion title="Out of GPU memory">
+    ```
+    torch.cuda.OutOfMemoryError
+    ```
+
+    - Use a quantized model variant (`--quantization awq` or `gptq`)
+    - Reduce `--max-model-len`
+    - Add more GPUs and increase `--tensor-parallel-size`
+    - Lower `--gpu-memory-utilization` (e.g., `0.85`) to leave room for KV cache growth
+  </Accordion>
+
+  <Accordion title="Model not found">
+    ```
+    Model 'xxx' not found
+    ```
+
+    `LLM_MODEL` must match the model identifier vLLM is serving exactly. Check what models are loaded:
+
+    ```bash
+    curl http://localhost:8000/v1/models
+    ```
+  </Accordion>
+
+  <Accordion title="Slow first request">
+    This is expected — vLLM compiles CUDA kernels on the first inference call. Subsequent requests run at full speed. Consider sending a warm-up request after server startup in production deployments.
+  </Accordion>
+</AccordionGroup>
